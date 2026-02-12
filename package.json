@@ -1,0 +1,47 @@
+{
+  "name": "pdf-extract-ai",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "@types/node": "^20.12.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.0",
+    "bcryptjs": "^2.4.3",
+    "clsx": "^2.1.0",
+    "exceljs": "^4.4.0",
+
+    "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.344.0",
+    "next": "^14.2.0",
+    "openai": "^4.29.0",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^5.4.624",
+    "postcss": "^8.4.0",
+    "prisma": "^5.12.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "stripe": "^14.21.0",
+    "tailwindcss": "^3.4.0",
+    "tesseract.js": "^5.0.5",
+    "typescript": "^5.4.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/pdf-parse": "^1.1.5",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.0"
+  }
+}

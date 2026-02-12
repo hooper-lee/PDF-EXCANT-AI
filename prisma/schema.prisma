@@ -1,0 +1,101 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password      String
+  name          String?
+  plan          String    @default("FREE")
+  pagesUsed     Int       @default(0)
+  pagesLimit    Int       @default(300)
+  stripeCustomerId String?
+  inviteCode    String?   @unique
+  invitedBy     String?
+  inviteCount   Int       @default(0)
+  invitePages   Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  documents     Document[]
+  subscriptions Subscription[]
+  orders        Order[]
+  invitedUsers  User[]    @relation("UserInvites")
+  inviter       User?     @relation("UserInvites", fields: [invitedBy], references: [id])
+}
+
+model Document {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  originalName  String
+  fileUrl       String
+  fileType      String
+  fileSize      Int
+  pageCount     Int
+  
+  status        String    @default("PENDING")
+  extractedData String?
+  outputUrl     String?
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  @@index([userId])
+}
+
+model Subscription {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  stripeSubscriptionId String? @unique
+  stripePriceId     String?
+  status            String
+  currentPeriodEnd  DateTime
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  @@index([userId])
+}
+
+model Order {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  planId        String   // 'free', 'monthly', 'yearly'
+  planName      String
+  amount        Float
+  currency      String   @default("USD")
+  status        String   @default("PENDING") // PENDING, COMPLETED, FAILED, CANCELLED
+  
+  // 支付信息
+  paymentMethod String?  // 'card', 'paypal', etc.
+  cardLast4     String?
+  cardBrand     String?
+  
+  // 订单详情
+  billingEmail  String
+  billingName   String?
+  billingCountry String?
+  
+  // 时间戳
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  completedAt   DateTime?
+  
+  @@index([userId])
+  @@index([status])
+}
+
+// 为 User 模型添加 orders 关系
+// 需要在 User 模型中添加: orders Order[]
