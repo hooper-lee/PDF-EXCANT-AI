@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { hashPassword, generateToken } from '@/lib/auth';
-import { createUsageRecord } from '@/lib/usage-record-service';
-import { USAGE_DIRECTION, USAGE_SOURCE } from '@/lib/domain-types';
+import { applyInviteReward } from '@/lib/services/quota.service';
 
 function generateInviteCode(): string {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -82,48 +81,26 @@ export async function POST(request: NextRequest) {
         name: name || null,
         inviteCode: newInviteCode,
         invitedBy,
-        // 全局约定：新用户基础额度 300 页，被邀请注册则额外 +100 页
-        pagesLimit: inviter ? 400 : 300,
+        // 全局约定：新用户基础额度 300 页，邀请奖励通过 quota-service 发放
+        pagesLimit: 300,
         inviteCount: 0,
         invitePages: 0,
       },
     });
 
+    let responseUser = user;
+
     // 如果是通过邀请注册，给邀请人增加页数和统计
     if (inviter) {
       try {
-        await prisma.$transaction(async (tx) => {
-          await tx.user.update({
-            where: { id: inviter.id },
-            data: {
-              inviteCount: { increment: 1 },
-              invitePages: { increment: 100 },
-              pagesLimit: { increment: 100 },
-            },
-          });
-
-          await createUsageRecord(
-            {
-              userId: inviter.id,
-              source: USAGE_SOURCE.INVITE_REWARD,
-              direction: USAGE_DIRECTION.IN,
-              pages: 100,
-              note: `Invite reward granted for inviting ${user.email}`,
-            },
-            tx
-          );
-
-          await createUsageRecord(
-            {
-              userId: user.id,
-              source: USAGE_SOURCE.INVITE_REWARD,
-              direction: USAGE_DIRECTION.IN,
-              pages: 100,
-              note: `Invite signup bonus from code ${inviteCode?.toUpperCase() ?? ''}`,
-            },
-            tx
-          );
+        const rewardResult = await applyInviteReward({
+          inviterUserId: inviter.id,
+          invitedUserId: user.id,
+          pages: 100,
+          inviteCode,
+          invitedUserEmail: user.email,
         });
+        responseUser = rewardResult.invitedUser;
       } catch (error) {
         console.error('更新邀请人统计错误:', error);
         // 不影响注册流程
@@ -135,15 +112,15 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        plan: user.plan,
-        pagesUsed: user.pagesUsed,
-        pagesLimit: user.pagesLimit,
-        inviteCode: user.inviteCode,
-        inviteCount: user.inviteCount || 0,
-        invitePages: user.invitePages || 0,
+        id: responseUser.id,
+        email: responseUser.email,
+        name: responseUser.name,
+        plan: responseUser.plan,
+        pagesUsed: responseUser.pagesUsed,
+        pagesLimit: responseUser.pagesLimit,
+        inviteCode: responseUser.inviteCode,
+        inviteCount: responseUser.inviteCount || 0,
+        invitePages: responseUser.invitePages || 0,
       },
       token,
       inviteBonus: inviter ? 100 : 0,

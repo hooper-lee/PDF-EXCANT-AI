@@ -77,9 +77,46 @@ AI 提取主链路目前是：
 - 后端：Next.js Route Handlers
 - 数据库：Prisma + SQLite
 - 认证：JWT、bcryptjs
-- AI / OCR：OpenAI、Tesseract.js
+- AI / OCR / Workflow：OpenAI、Tesseract.js、LangGraph
 - PDF / Excel：pdf-lib、pdf-parse、pdfjs-dist、ExcelJS、xlsx
 - 支付相关：当前仅有本地模拟支付流程，未集成第三方支付 SDK
+
+## 架构边界
+
+当前仓库已引入 LangGraph，但只用于 `ExtractionJob` 的提取工作流编排。
+
+### LangGraph 负责什么
+
+- 仅负责 AI 提取工作流的节点编排
+- 当前覆盖：
+  - 加载任务与文档
+  - 检测文本层
+  - 文本提取
+  - OCR fallback
+  - 文本归一化
+  - Prompt 组装
+  - LLM 调用
+  - 结果校验
+  - Excel 导出
+  - 成功/失败结果落库
+
+### service / repository 负责什么
+
+- 普通 SaaS 业务仍保留在 `lib/services` 和 `lib/repositories`
+- 例如：
+  - 用户认证与用户资料
+  - mock 支付、订单、订阅
+  - 额度聚合与额度流水
+  - 管理后台 CRUD
+  - Prisma 查询与数据库访问
+
+### 当前边界说明
+
+- LangGraph 不负责用户认证
+- LangGraph 不负责支付、订单、订阅
+- LangGraph 不负责用户额度总览查询
+- LangGraph 不负责后台管理逻辑
+- 提取工作流节点可以调用已有 service / repository，但不承载这些领域本身的业务规则
 
 ## 当前已实现功能
 
@@ -239,6 +276,17 @@ prisma/   Prisma schema 和 seed 脚本
 public/   静态资源
 scripts/  项目脚本
 ```
+
+其中与后端分层相关的实际职责是：
+
+- `app/api/`
+  - 路由入口、参数解析、鉴权、调用 service、返回响应
+- `lib/services/`
+  - 普通业务编排，例如 document / extraction / quota / billing
+- `lib/repositories/`
+  - Prisma 数据访问
+- `lib/workflows/extraction-graph/`
+  - 仅 AI 提取工作流编排
 
 ## 待改进方向
 

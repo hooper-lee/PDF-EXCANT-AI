@@ -1,6 +1,6 @@
-import { prisma } from '@/lib/prisma';
-import type { Prisma } from '@prisma/client';
-import type { UsageDirection, UsageSource } from '@/lib/domain-types';
+import type { UsageDirection, UsageSource } from '@/lib/domain';
+import type { PrismaClientLike } from '@/lib/repositories/shared';
+import { createUsageRecordEntry } from '@/lib/repositories/usage-record-repository';
 
 interface CreateUsageRecordInput {
   userId: string;
@@ -11,20 +11,9 @@ interface CreateUsageRecordInput {
   note?: string | null;
 }
 
-type PrismaClientLike = typeof prisma | Prisma.TransactionClient;
-
 export async function createUsageRecord(
   input: CreateUsageRecordInput,
-  db: PrismaClientLike = prisma
+  db?: PrismaClientLike
 ) {
-  return db.usageRecord.create({
-    data: {
-      userId: input.userId,
-      source: input.source,
-      direction: input.direction,
-      pages: input.pages,
-      documentId: input.documentId ?? null,
-      note: input.note ?? null,
-    },
-  });
+  return createUsageRecordEntry(input, db);
 }

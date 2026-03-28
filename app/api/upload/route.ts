@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import { verifyToken } from '@/lib/auth';
-import { ExtractionJobError, runExtractionJob } from '@/lib/extraction-job-service';
+import { ExtractionJobError, processExtractionUpload } from '@/lib/services/extraction.service';
 import { assertExtractableFile, getExtractedWorkbookFilename } from '@/lib/documents/upload-file';
 
 export async function POST(request: NextRequest) {
@@ -17,15 +16,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '无效的令牌' }, { status: 401 });
     }
 
-    // 获取用户信息
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      return NextResponse.json({ error: '用户不存在' }, { status: 404 });
-    }
-
     // 解析表单数据
     const formData = await request.formData();
     const file = formData.get('file') as File;
@@ -34,13 +24,11 @@ export async function POST(request: NextRequest) {
 
     assertExtractableFile(file);
 
-    const { document, job, excelBuffer, user: updatedUser } = await runExtractionJob({
-      userId: user.id,
+    const { document, job, excelBuffer, user: updatedUser } = await processExtractionUpload({
+      userId,
       file,
       userPrompt,
       templateId: templateId || undefined,
-      pagesUsed: user.pagesUsed,
-      pagesLimit: user.pagesLimit,
     });
 
     // 返回 Excel 文件
@@ -51,6 +39,8 @@ export async function POST(request: NextRequest) {
         'X-Document-Id': document.id,
         'X-Extraction-Job-Id': job.id,
         'X-User-Pages-Used': String(updatedUser.pagesUsed),
+        'X-Deprecated-Route': '/api/upload',
+        'X-Replacement-Route': '/api/extraction-jobs',
       },
     });
   } catch (error) {

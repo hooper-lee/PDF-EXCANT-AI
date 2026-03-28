@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import { verifyToken } from '@/lib/auth';
+import { getRecentUsageRecordsForUser } from '@/lib/services/quota.service';
 
 export async function GET(request: NextRequest) {
   try {
@@ -18,26 +18,7 @@ export async function GET(request: NextRequest) {
     const rawLimit = Number(searchParams.get('limit') || '10');
     const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 50) : 10;
 
-    const usageRecords = await prisma.usageRecord.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      select: {
-        id: true,
-        source: true,
-        direction: true,
-        pages: true,
-        note: true,
-        createdAt: true,
-        documentId: true,
-        document: {
-          select: {
-            id: true,
-            originalName: true,
-          },
-        },
-      },
-    });
+    const usageRecords = await getRecentUsageRecordsForUser(userId, limit);
 
     return NextResponse.json({ usageRecords });
   } catch (error) {

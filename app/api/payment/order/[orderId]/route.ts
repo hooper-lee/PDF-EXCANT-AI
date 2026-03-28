@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import jwt from 'jsonwebtoken';
+import { getOrderForUser } from '@/lib/services/billing.service';
 
 export async function GET(
   request: NextRequest,
@@ -24,21 +24,7 @@ export async function GET(
     }
 
     // 获取订单详情
-    const order = await (prisma as any).order.findFirst({
-      where: {
-        id: orderId,
-        userId: userId
-      },
-      include: {
-        user: {
-          select: {
-            plan: true,
-            pagesLimit: true,
-            pagesUsed: true
-          }
-        }
-      }
-    });
+    const order = await getOrderForUser(orderId, userId);
 
     if (!order) {
       return NextResponse.json({ error: '订单不存在' }, { status: 404 });

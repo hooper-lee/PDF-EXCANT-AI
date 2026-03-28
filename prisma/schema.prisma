@@ -105,6 +105,7 @@ model ExtractionJob {
   ocrText      String?
   resultJson   String?
   errorMessage String?
+  lastStep     String?
   startedAt    DateTime?
   finishedAt   DateTime?
   createdAt    DateTime @default(now())

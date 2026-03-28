@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireAdmin } from '@/lib/admin-auth';
 import { hashPassword } from '@/lib/auth';
-import { USER_PLAN_VALUES, USAGE_DIRECTION, USAGE_SOURCE } from '@/lib/domain-types';
-import { createUsageRecord } from '@/lib/usage-record-service';
+import { USER_PLAN_VALUES } from '@/lib/domain-types';
+import { adjustPagesByAdmin } from '@/lib/services/quota.service';
 
 // 获取单个用户的详细信息
 export async function GET(
@@ -86,55 +86,12 @@ export async function PUT(
       return NextResponse.json({ error: '无效的套餐类型' }, { status: 400 });
     }
 
-    const existingUser = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        pagesLimit: true,
-      },
-    });
-
-    if (!existingUser) {
-      return NextResponse.json({ error: '用户不存在' }, { status: 404 });
-    }
-
-    const nextPagesLimit = pagesLimit !== undefined ? parseInt(pagesLimit) : existingUser.pagesLimit;
-
-    const updatedUser = await prisma.$transaction(async (tx) => {
-      const updatedUser = await tx.user.update({
-        where: { id: userId },
-        data: {
-          ...(plan && { plan }),
-          ...(pagesLimit !== undefined && { pagesLimit: nextPagesLimit }),
-          ...(pagesUsed !== undefined && { pagesUsed: parseInt(pagesUsed) }),
-          ...(name !== undefined && { name }),
-        },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          plan: true,
-          pagesUsed: true,
-          pagesLimit: true,
-        },
-      });
-
-      const delta = nextPagesLimit - existingUser.pagesLimit;
-      if (delta !== 0) {
-        await createUsageRecord(
-          {
-            userId,
-            source: USAGE_SOURCE.ADMIN_ADJUST,
-            direction: delta > 0 ? USAGE_DIRECTION.IN : USAGE_DIRECTION.OUT,
-            pages: Math.abs(delta),
-            note: `Admin adjusted pagesLimit from ${existingUser.pagesLimit} to ${nextPagesLimit}`,
-          },
-          tx
-        );
-      }
-
-      return updatedUser;
+    const updatedUser = await adjustPagesByAdmin({
+      userId,
+      ...(plan ? { plan } : {}),
+      ...(pagesLimit !== undefined ? { nextPagesLimit: parseInt(pagesLimit) } : {}),
+      ...(pagesUsed !== undefined ? { nextPagesUsed: parseInt(pagesUsed) } : {}),
+      ...(name !== undefined ? { name } : {}),
     });
 
     return NextResponse.json({ 
@@ -143,6 +100,9 @@ export async function PUT(
     });
   } catch (error) {
     console.error('更新用户信息错误:', error);
+    if (error instanceof Error && error.message === '用户不存在') {
+      return NextResponse.json({ error: '用户不存在' }, { status: 404 });
+    }
     return NextResponse.json(
       { error: '更新失败' },
       { status: 500 }

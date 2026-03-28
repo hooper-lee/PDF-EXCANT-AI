@@ -20,12 +20,20 @@ interface RunLlmExtractionOptions {
   template?: LlmExtractionTemplate | null;
 }
 
-export async function runLlmExtraction(text: string, options: RunLlmExtractionOptions = {}) {
-  const { systemPrompt, userMessage } = buildExtractionPrompt(text, options);
+interface InvokeLlmExtractionPromptInput {
+  systemPrompt: string;
+  userMessage: string;
+  fallbackText: string;
+}
 
+export async function invokeLlmExtractionPrompt({
+  systemPrompt,
+  userMessage,
+  fallbackText,
+}: InvokeLlmExtractionPromptInput) {
   if (!openai) {
     console.log('使用基于规则的数据提取（演示模式）');
-    return extractDataWithRules(text);
+    return extractDataWithRules(fallbackText);
   }
 
   try {
@@ -43,4 +51,14 @@ export async function runLlmExtraction(text: string, options: RunLlmExtractionOp
     console.error('OpenAI API 错误:', error);
     throw new Error('OpenAI API 调用失败，请检查 API Key 是否正确配置。');
   }
+}
+
+export async function runLlmExtraction(text: string, options: RunLlmExtractionOptions = {}) {
+  const { systemPrompt, userMessage } = buildExtractionPrompt(text, options);
+
+  return invokeLlmExtractionPrompt({
+    systemPrompt,
+    userMessage,
+    fallbackText: text,
+  });
 }

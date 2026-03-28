@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import { verifyToken } from '@/lib/auth';
+import {
+  getDocumentForUser,
+  removeDocumentForUser,
+} from '@/lib/services/document.service';
+import { apiError, apiSuccess } from '@/lib/api/response';
 
 export async function GET(
   request: NextRequest,
@@ -9,35 +13,24 @@ export async function GET(
   try {
     const token = request.headers.get('authorization')?.replace('Bearer ', '');
     if (!token) {
-      return NextResponse.json({ error: '未授权' }, { status: 401 });
+      return apiError('UNAUTHORIZED', '未授权', 401);
     }
 
     const userId = verifyToken(token);
     if (!userId) {
-      return NextResponse.json({ error: '无效的令牌' }, { status: 401 });
+      return apiError('INVALID_TOKEN', '无效的令牌', 401);
     }
 
-    const document = await prisma.document.findFirst({
-      where: {
-        id: params.id,
-        userId,
-      },
-      include: {
-        extractionJobs: {
-          orderBy: { createdAt: 'desc' },
-          take: 5,
-        },
-      },
-    });
+    const document = await getDocumentForUser(params.id, userId);
 
     if (!document) {
-      return NextResponse.json({ error: '文档不存在' }, { status: 404 });
+      return apiError('DOCUMENT_NOT_FOUND', '文档不存在', 404);
     }
 
-    return NextResponse.json({ document });
+    return apiSuccess({ document });
   } catch (error) {
     console.error('获取文档错误:', error);
-    return NextResponse.json({ error: '获取失败' }, { status: 500 });
+    return apiError('DOCUMENT_GET_FAILED', '获取失败', 500);
   }
 }
 
@@ -48,32 +41,22 @@ export async function DELETE(
   try {
     const token = request.headers.get('authorization')?.replace('Bearer ', '');
     if (!token) {
-      return NextResponse.json({ error: '未授权' }, { status: 401 });
+      return apiError('UNAUTHORIZED', '未授权', 401);
     }
 
     const userId = verifyToken(token);
     if (!userId) {
-      return NextResponse.json({ error: '无效的令牌' }, { status: 401 });
+      return apiError('INVALID_TOKEN', '无效的令牌', 401);
     }
 
-    const document = await prisma.document.findFirst({
-      where: {
-        id: params.id,
-        userId,
-      },
-    });
+    await removeDocumentForUser(params.id, userId);
 
-    if (!document) {
-      return NextResponse.json({ error: '文档不存在' }, { status: 404 });
-    }
-
-    await prisma.document.delete({
-      where: { id: params.id },
-    });
-
-    return NextResponse.json({ success: true });
+    return apiSuccess({ deleted: true });
   } catch (error) {
     console.error('删除文档错误:', error);
-    return NextResponse.json({ error: '删除失败' }, { status: 500 });
+    if (error instanceof Error && error.message === '文档不存在') {
+      return apiError('DOCUMENT_NOT_FOUND', error.message, 404);
+    }
+    return apiError('DOCUMENT_DELETE_FAILED', '删除失败', 500);
   }
 }

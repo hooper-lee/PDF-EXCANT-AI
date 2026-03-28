@@ -1,43 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import { verifyToken } from '@/lib/auth';
+import { getDocumentsForUser } from '@/lib/services/document.service';
+import { apiError, apiSuccess } from '@/lib/api/response';
 
 export async function GET(request: NextRequest) {
   try {
     const token = request.headers.get('authorization')?.replace('Bearer ', '');
     if (!token) {
-      return NextResponse.json({ error: '未授权' }, { status: 401 });
+      return apiError('UNAUTHORIZED', '未授权', 401);
     }
 
     const userId = verifyToken(token);
     if (!userId) {
-      return NextResponse.json({ error: '无效的令牌' }, { status: 401 });
+      return apiError('INVALID_TOKEN', '无效的令牌', 401);
     }
 
-    const documents = await prisma.document.findMany({
-      where: { userId },
-      include: {
-        extractionJobs: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-          select: {
-            id: true,
-            status: true,
-            errorMessage: true,
-            createdAt: true,
-            finishedAt: true,
-          },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const documents = await getDocumentsForUser(userId);
 
-    return NextResponse.json({ documents });
+    return apiSuccess({ documents });
   } catch (error) {
     console.error('获取文档列表错误:', error);
-    return NextResponse.json(
-      { error: '获取失败' },
-      { status: 500 }
-    );
+    return apiError('DOCUMENT_LIST_FAILED', '获取失败', 500);
   }
 }

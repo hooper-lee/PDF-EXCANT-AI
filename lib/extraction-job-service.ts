@@ -1,1 +1,2 @@
-export { ExtractionJobError, runExtractionJob } from '@/lib/extraction/runner/extraction-job-runner';
+export { ExtractionJobError, processExtractionUpload } from '@/lib/services/extraction.service';
+export { runExtractionJob } from '@/lib/extraction/runner/extraction-job-runner';
