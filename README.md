@@ -30,11 +30,11 @@ AI 提取主链路目前是：
 
 ### 支付
 
-- 当前支付流程不是 Stripe 完整闭环
-- 前端有结账页，后端有订单与订阅写入逻辑
-- `app/api/payment/process/route.ts` 当前使用的是本地模拟支付校验
-- `stripe` 依赖和相关环境变量已存在，但代码里没有真正创建 Stripe PaymentIntent、Checkout Session，也没有 webhook 闭环
-- 因此当前状态应视为“模拟支付 + 本地订单/订阅记录”，不是正式 Stripe 接入
+- 当前支付流程是“本地模拟支付 + 本地订单 / 订阅记录”
+- 前端有结账页，后端会写入 `Order` 和 `Subscription`
+- `app/api/payment/process/route.ts` 当前只做本地表单校验和模拟支付结果，不会调用第三方支付网关
+- 仓库中保留了 `STRIPE_*` 环境变量和 `Subscription` / `User` 上的部分 Stripe 预留字段，但当前没有真正创建 Stripe PaymentIntent、Checkout Session，也没有 webhook 闭环
+- 因此当前状态应视为“仅 mock 支付”，不是“部分 Stripe 已接入”
 
 ### AI 提取
 
@@ -79,7 +79,7 @@ AI 提取主链路目前是：
 - 认证：JWT、bcryptjs
 - AI / OCR：OpenAI、Tesseract.js
 - PDF / Excel：pdf-lib、pdf-parse、pdfjs-dist、ExcelJS、xlsx
-- 支付相关：已安装 `stripe` 依赖，但当前业务流程仍以模拟支付为主
+- 支付相关：当前仅有本地模拟支付流程，未集成第三方支付 SDK
 
 ## 当前已实现功能
 
@@ -124,6 +124,9 @@ AI 提取主链路目前是：
 
 - `User`
 - `Document`
+- `ExtractionJob`
+- `ExtractionTemplate`
+- `UsageRecord`
 - `Subscription`
 - `Order`
 
@@ -205,7 +208,7 @@ npm run dev
 - `STRIPE_SECRET_KEY`
 - `STRIPE_PUBLISHABLE_KEY`
 - `STRIPE_WEBHOOK_SECRET`
-  - 当前没有真正的 Stripe 支付闭环
+  - 当前仓库未调用 Stripe SDK，这些变量仅作为后续接入预留
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
 - `AWS_REGION`
@@ -239,7 +242,7 @@ scripts/  项目脚本
 
 ## 待改进方向
 
-- 将支付流程从模拟支付改为真正的 Stripe 闭环
+- 如需接入 Stripe，建议下一步先补 `Checkout Session` 或 `PaymentIntent` 创建，再补 webhook、订阅同步和额度发放对账
 - 将上传文件落到对象存储，并让 `fileUrl` / `outputUrl` 有真实值
 - 统一部分状态字段为 Prisma enum，而不是字符串
 - 继续补全 `pdf-edit`、`pdf-to-excel` 等仍处于占位状态的页面

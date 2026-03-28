@@ -176,6 +176,9 @@ export default function CheckoutPage() {
 
               <div className="bg-white rounded-2xl shadow-lg p-8">
                 <h2 className="text-2xl font-bold text-gray-900 mb-6">支付方式</h2>
+                <div className="mb-6 rounded-xl border border-yellow-200 bg-yellow-50 p-4 text-sm text-yellow-800">
+                  当前仓库仍使用本地模拟支付流程。提交表单会创建本地订单和订阅记录，但不会发起真实银行卡扣款。
+                </div>
                 <form onSubmit={handleSubmit} className="space-y-6">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">邮箱</label>

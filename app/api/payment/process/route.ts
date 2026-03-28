@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '无效的方案' }, { status: 400 });
     }
 
-    // 模拟支付验证
+    // 当前仅做本地模拟支付校验，不会发起真实扣款
     const isPaymentValid = await simulatePaymentValidation({
       cardNumber,
       expiryDate,
@@ -104,7 +104,8 @@ export async function POST(request: NextRequest) {
         }
       });
 
-      // 如果不是免费版，创建或更新订阅记录
+      // 如果不是免费版，创建或更新本地订阅记录
+      // 注意：这里不会与 Stripe 订阅做同步，相关字段仅作为后续扩展位保留
       if (planId !== 'free') {
         const periodEnd = new Date();
         if (selectedPlan.period === 'month') {
@@ -121,20 +122,20 @@ export async function POST(request: NextRequest) {
           await tx.subscription.update({
             where: { id: existingSubscription.id },
             data: {
-              stripeSubscriptionId: `sub_${Date.now()}`,
+              stripeSubscriptionId: null,
               status: SUBSCRIPTION_STATUS.ACTIVE,
               currentPeriodEnd: periodEnd,
-              stripePriceId: planId
+              stripePriceId: null
             }
           });
         } else {
           await tx.subscription.create({
             data: {
               userId,
-              stripeSubscriptionId: `sub_${Date.now()}`,
+              stripeSubscriptionId: null,
               status: SUBSCRIPTION_STATUS.ACTIVE,
               currentPeriodEnd: periodEnd,
-              stripePriceId: planId
+              stripePriceId: null
             }
           });
         }
@@ -157,7 +158,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       orderId: order.id,
-      message: '支付成功！',
+      message: '模拟支付成功，套餐已生效。',
       user: {
         plan: updatedUser.plan,
         pagesLimit: updatedUser.pagesLimit,
