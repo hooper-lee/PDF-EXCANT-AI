@@ -1,13 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { 
   Upload, Loader2, Download, Home, Save, Plus, X, Settings, FileText,
   Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight,
   Undo2, Redo2, Type, Palette, Grid3x3, Hash, Calendar,
   DollarSign, Percent, FileSpreadsheet, Sparkles, ChevronDown,
-  Copy, Clipboard, Scissors, MoreHorizontal, Filter, ArrowUp, ArrowDown,
-  Layers, Split, WrapText, RotateCcw, RotateCw, ChevronRight, ChevronLeft
+  Copy, Clipboard, Scissors, Filter, ArrowUp, ArrowDown,
+  Layers, WrapText, ChevronRight, ChevronLeft
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -52,13 +52,16 @@ interface CellFormat {
 interface HistoryState {
   sheets: SheetData[];
   cellFormats: CellFormat;
+  activeSheetId: string;
 }
 
 interface ExtractionJobInfo {
   id: string;
   status: JobStatus;
+  documentId?: string | null;
   errorMessage?: string | null;
   finishedAt?: string | null;
+  lastStep?: string | null;
 }
 
 interface ExtractionTemplate {
@@ -69,8 +72,122 @@ interface ExtractionTemplate {
   promptText: string;
 }
 
-const DEFAULT_SHEET: SheetData = { id: 'sheet1', name: 'Sheet1', data: [], headers: [] };
+interface ExtractSessionRecord {
+  id: string;
+  name: string;
+  selectedTemplateId?: string | null;
+  prompt?: string | null;
+  parseRule?: string | null;
+  sheetsJson?: string | null;
+  activeSheetId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ExtractSessionSavePayload {
+  name: string;
+  selectedTemplateId: string | null;
+  prompt: string;
+  parseRule: string;
+  sheetsJson: string;
+  activeSheetId: string;
+}
+
 const DEFAULT_COLUMN_COUNT = 10;
+const DEFAULT_ROW_COUNT = 20;
+const DISABLED_TOOL_BUTTON_CLASS =
+  'p-2 rounded transition-colors opacity-30 cursor-not-allowed text-gray-400';
+const DEFAULT_CELL_FORMAT: CellStyle = {
+  bold: false,
+  italic: false,
+  underline: false,
+  strikethrough: false,
+  fontSize: 11,
+  fontFamily: 'Arial',
+  textAlign: 'left',
+  backgroundColor: '#ffffff',
+  textColor: '#000000',
+  border: 'none',
+  numberFormat: 'general',
+  wrapText: false,
+  indent: 0,
+};
+
+function createEmptyCell(): CellData {
+  return { value: '', formula: undefined, computed: undefined };
+}
+
+function normalizeCellData(cell: unknown): CellData {
+  if (typeof cell === 'object' && cell !== null) {
+    const candidate = cell as Partial<CellData>;
+    return {
+      value: typeof candidate.value === 'string' ? candidate.value : String(candidate.value ?? ''),
+      formula: typeof candidate.formula === 'string' ? candidate.formula : undefined,
+      computed:
+        typeof candidate.computed === 'undefined' ? undefined : (candidate.computed as number | string),
+    };
+  }
+
+  return {
+    value: String(cell ?? ''),
+    formula: undefined,
+    computed: undefined,
+  };
+}
+
+function createSheetGrid(rowCount = DEFAULT_ROW_COUNT, columnCount = DEFAULT_COLUMN_COUNT): CellData[][] {
+  return Array.from({ length: rowCount }, () =>
+    Array.from({ length: columnCount }, () => createEmptyCell())
+  );
+}
+
+function normalizeSheetData(sheet: Partial<SheetData> | null | undefined, fallbackId: string, fallbackName: string): SheetData {
+  const rawRows = Array.isArray(sheet?.data) ? sheet!.data : [];
+  const headerCount = Array.isArray(sheet?.headers) ? sheet!.headers.length : 0;
+  const widestRow = rawRows.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0);
+  const columnCount = Math.max(DEFAULT_COLUMN_COUNT, headerCount, widestRow);
+  const rowCount = Math.max(DEFAULT_ROW_COUNT, rawRows.length);
+
+  return {
+    id: sheet?.id || fallbackId,
+    name: sheet?.name || fallbackName,
+    headers: Array.isArray(sheet?.headers) ? sheet!.headers : [],
+    data: Array.from({ length: rowCount }, (_, rowIndex) =>
+      Array.from({ length: columnCount }, (_, colIndex) =>
+        normalizeCellData(rawRows[rowIndex]?.[colIndex])
+      )
+    ),
+  };
+}
+
+function createSheet(id: string, name: string): SheetData {
+  return normalizeSheetData({ id, name, data: [], headers: [] }, id, name);
+}
+
+function sanitizeExportCell(cell: unknown): CellData {
+  return normalizeCellData(cell);
+}
+
+function sanitizeExportSheets(sheets: SheetData[]): SheetData[] {
+  return sheets.map((sheet, index) =>
+    normalizeSheetData(
+      {
+        id: sheet?.id || `sheet${index + 1}`,
+        name: sheet?.name || `Sheet${index + 1}`,
+        headers: Array.isArray(sheet?.headers) ? sheet.headers : [],
+        data: Array.isArray(sheet?.data)
+          ? sheet.data.map((row) =>
+              Array.isArray(row) ? row.map((cell) => sanitizeExportCell(cell)) : []
+            )
+          : [],
+      },
+      sheet?.id || `sheet${index + 1}`,
+      sheet?.name || `Sheet${index + 1}`
+    )
+  );
+}
+
+const DEFAULT_SHEET: SheetData = createSheet('sheet1', 'Sheet1');
 
 function safeParseJson<T>(raw: string | null, fallback: T): T {
   if (!raw) {
@@ -94,30 +211,14 @@ export default function ExtractPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [user, setUser] = useState<any>(null);
-  const [sheets, setSheets] = useState<SheetData[]>([
-    { id: 'sheet1', name: 'Sheet1', data: [], headers: [] }
-  ]);
-  const [activeSheetId, setActiveSheetId] = useState('sheet1');
+  const [sheets, setSheets] = useState<SheetData[]>([DEFAULT_SHEET]);
+  const [activeSheetId, setActiveSheetId] = useState(DEFAULT_SHEET.id);
   const [templates, setTemplates] = useState<ExtractionTemplate[]>([]);
   const [showSelectTemplateDialog, setShowSelectTemplateDialog] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const [selectedCell, setSelectedCell] = useState<{ row: number; col: number } | null>(null);
   const [cellFormats, setCellFormats] = useState<CellFormat>({});
-  const [currentFormat, setCurrentFormat] = useState<CellStyle>({
-    bold: false,
-    italic: false,
-    underline: false,
-    strikethrough: false,
-    fontSize: 11,
-    fontFamily: 'Arial',
-    textAlign: 'left',
-    backgroundColor: '#ffffff',
-    textColor: '#000000',
-    border: 'none',
-    numberFormat: 'general',
-    wrapText: false,
-    indent: 0
-  });
+  const [currentFormat, setCurrentFormat] = useState<CellStyle>(DEFAULT_CELL_FORMAT);
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [formulaBarValue, setFormulaBarValue] = useState('');
@@ -129,24 +230,33 @@ export default function ExtractPage() {
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState('');
   const [latestJob, setLatestJob] = useState<ExtractionJobInfo | null>(null);
+  const [sessions, setSessions] = useState<ExtractSessionRecord[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState('');
+  const [loadingSessions, setLoadingSessions] = useState(true);
+  const [savingSession, setSavingSession] = useState(false);
+  const historyRef = useRef<HistoryState[]>([]);
+  const historyIndexRef = useRef(-1);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSavedSessionSnapshotRef = useRef('');
 
   const resetWorkspace = (nextName?: string) => {
+    const nextSheets = [createSheet(DEFAULT_SHEET.id, DEFAULT_SHEET.name)];
     setFile(null);
     setPrompt('');
     setError('');
     setParseRule('');
     setSelectedTemplateId('');
-    setSheets([{ ...DEFAULT_SHEET }]);
+    setSheets(nextSheets);
     setActiveSheetId(DEFAULT_SHEET.id);
     setCellFormats({});
     setLatestJob(null);
     setSelectedCell(null);
     setFormulaBarValue('');
-    setHistory([]);
-    setHistoryIndex(-1);
+    setCurrentFormat(DEFAULT_CELL_FORMAT);
     setConversationName(nextName || `${t.extract.conversation} 1`);
     setIsEditingName(false);
     setTempName('');
+    resetHistoryState(nextSheets, {}, DEFAULT_SHEET.id);
   };
 
   const getSheetColumnCount = (sheet: SheetData) => {
@@ -176,6 +286,90 @@ export default function ExtractPage() {
     return cell.value || '';
   };
 
+  const cloneSheets = (value: SheetData[]) => JSON.parse(JSON.stringify(value)) as SheetData[];
+  const cloneCellFormats = (value: CellFormat) => JSON.parse(JSON.stringify(value)) as CellFormat;
+
+  const buildHistoryState = (
+    nextSheets: SheetData[],
+    nextCellFormats: CellFormat,
+    nextActiveSheetId: string
+  ): HistoryState => ({
+    sheets: cloneSheets(nextSheets),
+    cellFormats: cloneCellFormats(nextCellFormats),
+    activeSheetId: nextActiveSheetId,
+  });
+
+  const resetHistoryState = (
+    nextSheets: SheetData[],
+    nextCellFormats: CellFormat,
+    nextActiveSheetId: string
+  ) => {
+    const initialHistory = [buildHistoryState(nextSheets, nextCellFormats, nextActiveSheetId)];
+    historyRef.current = initialHistory;
+    historyIndexRef.current = 0;
+    setHistory(initialHistory);
+    setHistoryIndex(0);
+  };
+
+  const pushHistoryState = (
+    nextSheets: SheetData[],
+    nextCellFormats: CellFormat,
+    nextActiveSheetId: string
+  ) => {
+    const nextHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
+    nextHistory.push(buildHistoryState(nextSheets, nextCellFormats, nextActiveSheetId));
+    historyRef.current = nextHistory;
+    historyIndexRef.current = nextHistory.length - 1;
+    setHistory(nextHistory);
+    setHistoryIndex(nextHistory.length - 1);
+  };
+
+  const syncSelectionState = (
+    nextSheets: SheetData[],
+    nextCellFormats: CellFormat,
+    nextActiveSheetId: string
+  ) => {
+    const currentSheet = nextSheets.find((sheet) => sheet.id === nextActiveSheetId) || nextSheets[0];
+    if (!currentSheet) {
+      setSelectedCell(null);
+      setFormulaBarValue('');
+      return;
+    }
+
+    if (
+      selectedCell &&
+      currentSheet.data[selectedCell.row] &&
+      currentSheet.data[selectedCell.row][selectedCell.col]
+    ) {
+      const cell = currentSheet.data[selectedCell.row][selectedCell.col];
+      setFormulaBarValue(cell.formula || cell.value || '');
+      const cellKey = `${currentSheet.id}-${selectedCell.row}-${selectedCell.col}`;
+      setCurrentFormat(nextCellFormats[cellKey] || DEFAULT_CELL_FORMAT);
+      return;
+    }
+
+    setSelectedCell(null);
+    setFormulaBarValue('');
+    setCurrentFormat(DEFAULT_CELL_FORMAT);
+  };
+
+  const applyHistorySnapshot = (snapshot: HistoryState) => {
+    const nextSheets = cloneSheets(snapshot.sheets);
+    const nextCellFormats = cloneCellFormats(snapshot.cellFormats);
+    const nextActiveSheetId =
+      nextSheets.find((sheet) => sheet.id === snapshot.activeSheetId)?.id || nextSheets[0]?.id || DEFAULT_SHEET.id;
+
+    setSheets(nextSheets);
+    setCellFormats(nextCellFormats);
+    setActiveSheetId(nextActiveSheetId);
+    syncSelectionState(nextSheets, nextCellFormats, nextActiveSheetId);
+  };
+
+  useEffect(() => {
+    historyRef.current = history;
+    historyIndexRef.current = historyIndex;
+  }, [history, historyIndex]);
+
   const updateSheetWithData = (data: any) => {
     let rows: any[] = [];
     let headers: string[] = [];
@@ -197,23 +391,202 @@ export default function ExtractPage() {
       }
     }
 
-    const tableData: CellData[][] = rows.map(row => 
-      headers.map(header => ({
-        value: String(row[header] || ''),
-        formula: undefined,
-        computed: undefined
-      }))
+    const rowCount = Math.max(DEFAULT_ROW_COUNT, rows.length);
+    const columnCount = Math.max(DEFAULT_COLUMN_COUNT, headers.length);
+    const tableData: CellData[][] = Array.from({ length: rowCount }, (_, rowIndex) =>
+      Array.from({ length: columnCount }, (_, colIndex) => {
+        if (rowIndex >= rows.length || colIndex >= headers.length) {
+          return createEmptyCell();
+        }
+
+        return {
+          value: String(rows[rowIndex]?.[headers[colIndex]] ?? ''),
+          formula: undefined,
+          computed: undefined,
+        };
+      })
     );
 
-    setSheets([
+    const nextSheets = [normalizeSheetData(
       {
         id: DEFAULT_SHEET.id,
         name: DEFAULT_SHEET.name,
         data: tableData,
         headers,
       },
-    ]);
+      DEFAULT_SHEET.id,
+      DEFAULT_SHEET.name
+    )];
+
+    setSheets(nextSheets);
     setActiveSheetId(DEFAULT_SHEET.id);
+    setCellFormats({});
+    setSelectedCell(null);
+    setFormulaBarValue('');
+    setCurrentFormat(DEFAULT_CELL_FORMAT);
+    resetHistoryState(nextSheets, {}, DEFAULT_SHEET.id);
+  };
+
+  const serializeSheets = () => JSON.stringify(sheets);
+
+  const buildSessionSavePayload = (override?: Partial<ExtractSessionSavePayload>): ExtractSessionSavePayload => ({
+    name: override?.name ?? conversationName,
+    selectedTemplateId: override?.selectedTemplateId ?? (selectedTemplateId || null),
+    prompt: override?.prompt ?? prompt,
+    parseRule: override?.parseRule ?? parseRule,
+    sheetsJson: override?.sheetsJson ?? serializeSheets(),
+    activeSheetId: override?.activeSheetId ?? activeSheetId,
+  });
+
+  const buildSessionSnapshot = (payload: ExtractSessionSavePayload) => JSON.stringify(payload);
+
+  const hydrateSession = (session: ExtractSessionRecord) => {
+    setCurrentSessionId(session.id);
+    setConversationName(session.name);
+    setPrompt(session.prompt || '');
+    setParseRule(session.parseRule || '');
+    setSelectedTemplateId(session.selectedTemplateId || '');
+    const parsedSheets = safeParseJson<SheetData[] | null>(session.sheetsJson || null, null);
+    const nextSheets =
+      Array.isArray(parsedSheets) && parsedSheets.length > 0
+        ? parsedSheets.map((sheet, index) =>
+            normalizeSheetData(sheet, `sheet${index + 1}`, `Sheet${index + 1}`)
+          )
+        : [createSheet(DEFAULT_SHEET.id, DEFAULT_SHEET.name)];
+    setSheets(nextSheets);
+    setActiveSheetId(session.activeSheetId || nextSheets[0].id || DEFAULT_SHEET.id);
+    setCellFormats({});
+    setLatestJob(null);
+    setSelectedCell(null);
+    setFormulaBarValue('');
+    setCurrentFormat(DEFAULT_CELL_FORMAT);
+    setFile(null);
+    setError('');
+    lastSavedSessionSnapshotRef.current = buildSessionSnapshot({
+      name: session.name,
+      selectedTemplateId: session.selectedTemplateId || null,
+      prompt: session.prompt || '',
+      parseRule: session.parseRule || '',
+      sheetsJson: JSON.stringify(nextSheets),
+      activeSheetId: session.activeSheetId || nextSheets[0].id || DEFAULT_SHEET.id,
+    });
+    resetHistoryState(nextSheets, {}, session.activeSheetId || nextSheets[0].id || DEFAULT_SHEET.id);
+  };
+
+  const createSession = async (token: string, name?: string) => {
+    const response = await fetch('/api/extract-sessions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name }),
+    });
+
+    if (!response.ok) {
+      throw new Error('创建会话失败');
+    }
+
+    const payload = await response.json();
+    return (payload?.data?.session || payload?.session) as ExtractSessionRecord;
+  };
+
+  const loadSession = async (sessionId: string, token: string) => {
+    const response = await fetch(`/api/extract-sessions/${sessionId}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error('加载会话失败');
+    }
+
+    const payload = await response.json();
+    const session = (payload?.data?.session || payload?.session) as ExtractSessionRecord | undefined;
+    if (!session) {
+      throw new Error('会话不存在');
+    }
+
+    hydrateSession(session);
+    return session;
+  };
+
+  const saveCurrentSession = async (override?: Partial<ExtractSessionSavePayload>) => {
+    if (!currentSessionId) {
+      return null;
+    }
+
+    const token = localStorage.getItem('token');
+    if (!token) {
+      throw new Error('未登录');
+    }
+
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+
+    setSavingSession(true);
+    try {
+      const sessionPayload = buildSessionSavePayload(override);
+      const response = await fetch(`/api/extract-sessions/${currentSessionId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(sessionPayload),
+      });
+
+      if (!response.ok) {
+        throw new Error('保存会话失败');
+      }
+
+      const payload = await response.json();
+      const session = (payload?.data?.session || payload?.session) as ExtractSessionRecord;
+      setSessions((prev) =>
+        prev
+          .map((item) => (item.id === session.id ? session : item))
+          .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      );
+      lastSavedSessionSnapshotRef.current = buildSessionSnapshot(sessionPayload);
+      return session;
+    } finally {
+      setSavingSession(false);
+    }
+  };
+
+  const handleCreateSession = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        router.push('/login');
+        return;
+      }
+
+      const session = await createSession(token);
+      setSessions((prev) => [session, ...prev]);
+      hydrateSession(session);
+    } catch (createError) {
+      console.error('创建会话失败:', createError);
+      setError(createError instanceof Error ? createError.message : '创建会话失败');
+    }
+  };
+
+  const handleOpenSession = async (sessionId: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        router.push('/login');
+        return;
+      }
+
+      await loadSession(sessionId, token);
+    } catch (openError) {
+      console.error('加载会话失败:', openError);
+      setError(openError instanceof Error ? openError.message : '加载会话失败');
+    }
   };
 
   useEffect(() => {
@@ -234,19 +607,100 @@ export default function ExtractPage() {
       return;
     }
     setUser(parsedUser);
-    resetWorkspace();
     
     // 如果用户没有邀请码，生成一个
     if (!parsedUser.inviteCode) {
       generateInviteCode();
     }
     
-    fetchTemplates();
+    const initializePage = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (!token) {
+          router.push('/login');
+          return;
+        }
+
+        await fetchTemplates();
+
+        const response = await fetch('/api/extract-sessions', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error('加载会话失败');
+        }
+
+        const payload = await response.json();
+        const sessionList = (payload?.data?.sessions || payload?.sessions || []) as ExtractSessionRecord[];
+        const querySessionId = searchParams.get('sessionId');
+
+        if (sessionList.length === 0) {
+          const created = await createSession(token);
+          setSessions([created]);
+          hydrateSession(created);
+          return;
+        }
+
+        setSessions(sessionList);
+        const initialSession =
+          sessionList.find((item) => item.id === querySessionId) || sessionList[0];
+        hydrateSession(initialSession);
+      } catch (initError) {
+        console.error('初始化 extract 页面失败:', initError);
+        setError(initError instanceof Error ? initError.message : '初始化页面失败');
+        resetWorkspace();
+      } finally {
+        setLoadingSessions(false);
+      }
+    };
+
+    void initializePage();
   }, []);
 
   useEffect(() => {
+    if (loadingSessions || !currentSessionId) {
+      return;
+    }
+
+    const nextSnapshot = buildSessionSnapshot(buildSessionSavePayload());
+    if (nextSnapshot === lastSavedSessionSnapshotRef.current) {
+      return;
+    }
+
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+
+    autoSaveTimerRef.current = setTimeout(() => {
+      void saveCurrentSession().catch((saveError) => {
+        console.error('自动保存会话失败:', saveError);
+        setError(saveError instanceof Error ? saveError.message : '自动保存失败');
+      });
+    }, 800);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [
+    loadingSessions,
+    currentSessionId,
+    conversationName,
+    prompt,
+    parseRule,
+    selectedTemplateId,
+    activeSheetId,
+    sheets,
+  ]);
+
+  useEffect(() => {
     const docId = searchParams.get('docId');
-    if (!user?.id || !docId) {
+    if (!user?.id || !docId || !currentSessionId) {
       return;
     }
 
@@ -273,7 +727,7 @@ export default function ExtractPage() {
             throw new Error('提取记录不存在');
           }
 
-          resetWorkspace(document.originalName || `${t.extract.conversation} 1`);
+          setConversationName(document.originalName || `${t.extract.conversation} 1`);
           if (document.extractedData) {
             const parsedData = safeParseJson(document.extractedData, {});
             updateSheetWithData(parsedData);
@@ -296,7 +750,7 @@ export default function ExtractPage() {
       };
 
       loadDocument();
-  }, [searchParams, user?.id, t.extract.conversation]);
+  }, [searchParams, user?.id, currentSessionId, t.extract.conversation]);
 
   const generateInviteCode = async () => {
     try {
@@ -343,6 +797,84 @@ export default function ExtractPage() {
     }
   };
 
+  const applyExtractionJobResult = (result: unknown) => {
+    if (result && (Array.isArray(result) || typeof result === 'object')) {
+      updateSheetWithData(result);
+      return true;
+    }
+
+    return false;
+  };
+
+  const fetchJobStatus = async (jobId: string, token: string) => {
+    const response = await fetch(`/api/extraction-jobs/${jobId}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error?.message || payload?.error || '获取任务状态失败');
+    }
+
+    const payload = await response.json();
+    const job = payload?.data?.job || payload?.job;
+    const result = payload?.data?.result ?? payload?.result ?? null;
+
+    if (!job) {
+      throw new Error('任务不存在');
+    }
+
+    const nextJob: ExtractionJobInfo = {
+      id: job.id,
+      status: job.status,
+      documentId: job.documentId || job.document?.id || null,
+      errorMessage: job.errorMessage,
+      finishedAt: job.finishedAt,
+      lastStep: job.lastStep,
+    };
+
+    setLatestJob(nextJob);
+
+    if (job.status === JOB_STATUS.COMPLETED) {
+      const applied = applyExtractionJobResult(result);
+      if (!applied && job.document?.extractedData) {
+        applyExtractionJobResult(safeParseJson(job.document.extractedData, {}));
+      }
+    }
+
+    if (job.status === JOB_STATUS.FAILED) {
+      throw new Error(job.errorMessage || '提取失败');
+    }
+
+    return {
+      job: nextJob,
+      result,
+    };
+  };
+
+  const pollExtractionJob = async (jobId: string, token: string) => {
+    const maxAttempts = 20;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const { job } = await fetchJobStatus(jobId, token);
+
+      if (job.status === JOB_STATUS.COMPLETED) {
+        return job;
+      }
+
+      if (job.status === JOB_STATUS.FAILED) {
+        throw new Error(job.errorMessage || '提取失败');
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+
+    throw new Error('提取任务仍在处理中，请稍后刷新查看结果');
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -369,8 +901,11 @@ export default function ExtractPage() {
       }
 
       const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('登录状态已失效，请重新登录');
+      }
       
-      const response = await fetch('/api/upload', {
+      const response = await fetch('/api/extraction-jobs', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -379,52 +914,34 @@ export default function ExtractPage() {
       });
 
       if (!response.ok) {
-        const data = await response.json();
-        if (data.jobId) {
+        const data = await response.json().catch(() => null);
+        const failedJobId = data?.data?.job?.id || data?.jobId || null;
+        if (failedJobId) {
           setLatestJob({
-            id: data.jobId,
+            id: failedJobId,
             status: JOB_STATUS.FAILED,
-            errorMessage: data.error || '处理失败',
+            errorMessage: data?.error?.message || data?.error || '处理失败',
           });
         }
-        throw new Error(data.error || '处理失败');
+        throw new Error(data?.error?.message || data?.error || '处理失败');
       }
 
-      const documentId = response.headers.get('X-Document-Id');
-      const jobId = response.headers.get('X-Extraction-Job-Id');
-      if (documentId) {
-        const docResponse = await fetch(`/api/documents/${documentId}`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-        });
-        
-        if (docResponse.ok) {
-          const docData = await docResponse.json();
-          const document = docData?.data?.document || docData?.document;
-          const parsedData = safeParseJson(document?.extractedData || '{}', {});
-          updateSheetWithData(parsedData);
-          const newestJob = document?.extractionJobs?.[0];
-          if (newestJob) {
-            setLatestJob({
-              id: newestJob.id,
-              status: newestJob.status,
-              errorMessage: newestJob.errorMessage,
-              finishedAt: newestJob.finishedAt,
-            });
-          } else if (jobId) {
-            setLatestJob({
-              id: jobId,
-              status: JOB_STATUS.COMPLETED,
-            });
-          }
-        }
-      } else if (jobId) {
-        setLatestJob({
-          id: jobId,
-          status: JOB_STATUS.COMPLETED,
-        });
+      const payload = await response.json();
+      const job = payload?.data?.job || payload?.job;
+      const document = payload?.data?.document || payload?.document;
+      const jobId = job?.id as string | undefined;
+
+      if (!jobId) {
+        throw new Error('创建提取任务失败：缺少 jobId');
       }
+
+      setLatestJob({
+        id: jobId,
+        status: job.status || JOB_STATUS.PENDING,
+        documentId: document?.id || null,
+      });
+
+      await pollExtractionJob(jobId, token);
 
       const userResponse = await fetch('/api/auth/me', {
         headers: {
@@ -444,20 +961,22 @@ export default function ExtractPage() {
   };
 
   const undo = () => {
-    if (historyIndex > 0) {
-      const prevState = history[historyIndex - 1];
-      setSheets(JSON.parse(JSON.stringify(prevState.sheets)));
-      setCellFormats(JSON.parse(JSON.stringify(prevState.cellFormats)));
-      setHistoryIndex(historyIndex - 1);
+    if (historyIndexRef.current > 0) {
+      const nextIndex = historyIndexRef.current - 1;
+      const prevState = historyRef.current[nextIndex];
+      historyIndexRef.current = nextIndex;
+      setHistoryIndex(nextIndex);
+      applyHistorySnapshot(prevState);
     }
   };
 
   const redo = () => {
-    if (historyIndex < history.length - 1) {
-      const nextState = history[historyIndex + 1];
-      setSheets(JSON.parse(JSON.stringify(nextState.sheets)));
-      setCellFormats(JSON.parse(JSON.stringify(nextState.cellFormats)));
-      setHistoryIndex(historyIndex + 1);
+    if (historyIndexRef.current < historyRef.current.length - 1) {
+      const nextIndex = historyIndexRef.current + 1;
+      const nextState = historyRef.current[nextIndex];
+      historyIndexRef.current = nextIndex;
+      setHistoryIndex(nextIndex);
+      applyHistorySnapshot(nextState);
     }
   };
 
@@ -509,14 +1028,11 @@ export default function ExtractPage() {
 
   const handleAddSheet = () => {
     const newSheetId = `sheet${sheets.length + 1}`;
-    const newSheet: SheetData = {
-      id: newSheetId,
-      name: `Sheet${sheets.length + 1}`,
-      data: [],
-      headers: []
-    };
-    setSheets([...sheets, newSheet]);
+    const newSheet = createSheet(newSheetId, `Sheet${sheets.length + 1}`);
+    const nextSheets = [...sheets, newSheet];
+    setSheets(nextSheets);
     setActiveSheetId(newSheetId);
+    pushHistoryState(nextSheets, cellFormats, newSheetId);
   };
 
   const handleDeleteSheet = (sheetId: string) => {
@@ -525,16 +1041,18 @@ export default function ExtractPage() {
       return;
     }
     const newSheets = sheets.filter(s => s.id !== sheetId);
+    const nextActiveSheetId = activeSheetId === sheetId ? newSheets[0].id : activeSheetId;
     setSheets(newSheets);
-    if (activeSheetId === sheetId) {
-      setActiveSheetId(newSheets[0].id);
-    }
+    setActiveSheetId(nextActiveSheetId);
+    pushHistoryState(newSheets, cellFormats, nextActiveSheetId);
   };
 
   const handleRenameSheet = (sheetId: string, newName: string) => {
-    setSheets(prev => prev.map(sheet =>
+    const nextSheets = sheets.map(sheet =>
       sheet.id === sheetId ? { ...sheet, name: newName } : sheet
-    ));
+    );
+    setSheets(nextSheets);
+    pushHistoryState(nextSheets, cellFormats, activeSheetId);
   };
 
   const handleSelectTemplate = (template: ExtractionTemplate | null) => {
@@ -543,14 +1061,33 @@ export default function ExtractPage() {
 
   const handleExport = async () => {
     try {
+      if (!Array.isArray(sheets) || sheets.length === 0) {
+        throw new Error('当前没有可导出的工作表');
+      }
+
+      const exportSheets = sanitizeExportSheets(sheets);
+      const hasVisibleData = exportSheets.some(
+        (sheet) =>
+          (sheet.headers && sheet.headers.length > 0) ||
+          sheet.data.some((row) => row.some((cell) => (cell.value || cell.computed || '').toString().trim() !== ''))
+      );
+
+      if (!hasVisibleData) {
+        throw new Error('当前表格为空，暂无可导出的数据');
+      }
+
       const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('登录状态已失效，请重新登录后导出');
+      }
+
       const response = await fetch('/api/export-excel', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ sheets }),
+        body: JSON.stringify({ sheets: exportSheets }),
       });
 
       if (!response.ok) {
@@ -574,46 +1111,30 @@ export default function ExtractPage() {
   };
 
   const handleCellEdit = (sheetId: string, rowIndex: number, colIndex: number, value: string) => {
-    setSheets(prev => {
-      const nextSheets = prev.map(sheet => {
-        if (sheet.id !== sheetId) {
-          return sheet;
-        }
+    const nextSheets = sheets.map(sheet => {
+      if (sheet.id !== sheetId) {
+        return sheet;
+      }
 
-        const newData = sheet.data.map((row) => [...row]);
-        while (newData.length <= rowIndex) {
-          newData.push([]);
-        }
+      const newData = sheet.data.map((row) => row.map((cell) => ({ ...cell })));
 
-        while (newData[rowIndex].length <= colIndex) {
-          newData[rowIndex].push({ value: '' });
-        }
+      const cellData: CellData = {
+        value,
+        formula: value.startsWith('=') ? value : undefined,
+        computed: undefined,
+      };
 
-        const cellData: CellData = {
-          value,
-          formula: value.startsWith('=') ? value : undefined,
-          computed: undefined,
-        };
+      newData[rowIndex][colIndex] = cellData;
 
-        newData[rowIndex][colIndex] = cellData;
+      if (cellData.formula) {
+        cellData.computed = evaluateFormula(cellData.formula, newData);
+      }
 
-        if (cellData.formula) {
-          cellData.computed = evaluateFormula(cellData.formula, newData);
-        }
-
-        return { ...sheet, data: newData };
-      });
-
-      const newHistory = history.slice(0, historyIndex + 1);
-      newHistory.push({
-        sheets: JSON.parse(JSON.stringify(nextSheets)),
-        cellFormats: JSON.parse(JSON.stringify(cellFormats)),
-      });
-      setHistory(newHistory);
-      setHistoryIndex(newHistory.length - 1);
-
-      return nextSheets;
+      return normalizeSheetData({ ...sheet, data: newData }, sheet.id, sheet.name);
     });
+
+    setSheets(nextSheets);
+    pushHistoryState(nextSheets, cellFormats, activeSheetId);
   };
 
   const handleCellSelect = (row: number, col: number) => {
@@ -624,17 +1145,8 @@ export default function ExtractPage() {
     
     // 更新公式栏
     const activeSheet = sheets.find(s => s.id === activeSheetId);
-    if (activeSheet && activeSheet.data[row] && activeSheet.data[row][col]) {
-      const cellData = activeSheet.data[row][col];
-      // 确保 cellData 是对象
-      if (typeof cellData === 'object' && cellData !== null) {
-        setFormulaBarValue(cellData.formula || cellData.value || '');
-      } else {
-        setFormulaBarValue(String(cellData || ''));
-      }
-    } else {
-      setFormulaBarValue('');
-    }
+    const cellData = activeSheet?.data[row]?.[col];
+    setFormulaBarValue(cellData?.formula || cellData?.value || '');
   };
 
   const handleFormulaBarChange = (value: string) => {
@@ -649,12 +1161,15 @@ export default function ExtractPage() {
     
     const cellKey = `${activeSheetId}-${selectedCell.row}-${selectedCell.col}`;
     const newFormat = { ...currentFormat, [formatKey]: value };
-    
-    setCellFormats(prev => ({
-      ...prev,
+
+    const nextCellFormats = {
+      ...cellFormats,
       [cellKey]: newFormat
-    }));
+    };
+
+    setCellFormats(nextCellFormats);
     setCurrentFormat(newFormat);
+    pushHistoryState(sheets, nextCellFormats, activeSheetId);
   };
 
   const getCellStyle = (row: number, col: number): React.CSSProperties => {
@@ -687,10 +1202,18 @@ export default function ExtractPage() {
   };
 
   const handleNameSave = () => {
-    if (tempName.trim()) {
-      setConversationName(tempName.trim());
+    const nextName = tempName.trim();
+    if (!nextName) {
+      setIsEditingName(false);
+      return;
     }
+
+    setConversationName(nextName);
     setIsEditingName(false);
+    void saveCurrentSession({ name: nextName }).catch((saveError) => {
+      console.error('保存会话名称失败:', saveError);
+      setError(saveError instanceof Error ? saveError.message : '保存会话名称失败');
+    });
   };
 
   const handleNameCancel = () => {
@@ -766,6 +1289,19 @@ export default function ExtractPage() {
             <div className="text-sm text-gray-500">{t.extract.pagesUsed.replace('{used}', String(user?.pagesUsed || 0)).replace('{limit}', String(user?.pagesLimit || 300))}</div>
           </div>
           <div className="flex gap-3 items-center">
+            <button
+              onClick={() => {
+                void saveCurrentSession().catch((saveError) => {
+                  console.error('保存会话失败:', saveError);
+                  setError(saveError instanceof Error ? saveError.message : '保存会话失败');
+                });
+              }}
+              disabled={!currentSessionId || savingSession}
+              className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            >
+              <Save className="w-4 h-4" />
+              {savingSession ? '保存中...' : '保存会话'}
+            </button>
             <button 
               onClick={() => setShowUpgradeDialog(true)}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
@@ -792,15 +1328,22 @@ export default function ExtractPage() {
           <div className="p-4 border-b">
             <button
               type="button"
-              onClick={() => resetWorkspace()}
+              onClick={handleCreateSession}
               className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition-colors border border-gray-200"
             >
               <Plus className="w-4 h-4" />
-              清空当前工作区
+              新建会话
             </button>
           </div>
 
           <div className="flex-1 p-4 overflow-y-auto space-y-4">
+            <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3 text-xs text-gray-500">
+              历史会话已统一在仪表盘中管理。
+              <Link href="/dashboard" className="ml-1 text-blue-600 hover:text-blue-700">
+                前往查看
+              </Link>
+            </div>
+
             {/* 文件上传区域 */}
             <div>
               <h3 className="text-sm font-medium text-gray-700 mb-3">拖放文件到这里</h3>
@@ -1187,12 +1730,10 @@ export default function ExtractPage() {
               
               {/* 单元格操作 */}
               <button
-                onClick={() => {
-                  // 合并单元格功能
-                  console.log('合并单元格');
-                }}
-                className="p-2 hover:bg-gray-200 rounded transition-colors"
-                title="合并单元格"
+                type="button"
+                disabled
+                className={DISABLED_TOOL_BUTTON_CLASS}
+                title="合并单元格暂未实现"
               >
                 <Layers className="w-4 h-4" />
               </button>
@@ -1232,32 +1773,26 @@ export default function ExtractPage() {
               
               {/* 排序和筛选 */}
               <button
-                onClick={() => {
-                  // 升序排序
-                  console.log('升序排序');
-                }}
-                className="p-2 hover:bg-gray-200 rounded transition-colors"
-                title="升序排序"
+                type="button"
+                disabled
+                className={DISABLED_TOOL_BUTTON_CLASS}
+                title="排序暂未实现"
               >
                 <ArrowUp className="w-4 h-4" />
               </button>
               <button
-                onClick={() => {
-                  // 降序排序
-                  console.log('降序排序');
-                }}
-                className="p-2 hover:bg-gray-200 rounded transition-colors"
-                title="降序排序"
+                type="button"
+                disabled
+                className={DISABLED_TOOL_BUTTON_CLASS}
+                title="排序暂未实现"
               >
                 <ArrowDown className="w-4 h-4" />
               </button>
               <button
-                onClick={() => {
-                  // 筛选功能
-                  console.log('筛选');
-                }}
-                className="p-2 hover:bg-gray-200 rounded transition-colors"
-                title="筛选"
+                type="button"
+                disabled
+                className={DISABLED_TOOL_BUTTON_CLASS}
+                title="筛选暂未实现"
               >
                 <Filter className="w-4 h-4" />
               </button>
@@ -1296,16 +1831,6 @@ export default function ExtractPage() {
               <span className="text-xs text-gray-600 font-medium w-16">
                 {selectedCell ? `${String.fromCharCode(65 + selectedCell.col)}${selectedCell.row + 1}` : 'A1'}
               </span>
-              <div className="flex items-center gap-2">
-                <button className="text-gray-500 hover:text-gray-700 transition-colors">
-                  <X className="w-4 h-4" />
-                </button>
-                <button className="text-green-500 hover:text-green-700 transition-colors">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                </button>
-              </div>
               <span className="text-xs text-gray-500 font-medium">fx</span>
               <input
                 type="text"
@@ -1341,54 +1866,29 @@ export default function ExtractPage() {
                     )}
                   </thead>
                   <tbody>
-                    {activeSheet.data.length > 0 ? (
-                      activeSheet.data.map((row, rowIndex) => (
-                        <tr key={rowIndex}>
-                          <td className="border border-gray-300 bg-gray-100 text-center text-xs text-gray-600 px-2">
-                            {rowIndex + (activeSheet.headers.length > 0 ? 2 : 1)}
+                    {activeSheet.data.map((row, rowIndex) => (
+                      <tr key={rowIndex}>
+                        <td className="border border-gray-300 bg-gray-100 text-center text-xs text-gray-600 px-2">
+                          {rowIndex + (activeSheet.headers.length > 0 ? 2 : 1)}
+                        </td>
+                        {Array.from({ length: getSheetColumnCount(activeSheet) }).map((_, colIndex) => (
+                          <td key={colIndex} className="border border-gray-300 p-0">
+                            <input
+                              type="text"
+                              value={getCellDisplayValue(activeSheet, rowIndex, colIndex)}
+                              onChange={(e) => handleCellEdit(activeSheet.id, rowIndex, colIndex, e.target.value)}
+                              onFocus={() => handleCellSelect(rowIndex, colIndex)}
+                              style={getCellStyle(rowIndex, colIndex)}
+                              className={`w-full h-full px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                selectedCell?.row === rowIndex && selectedCell?.col === colIndex
+                                  ? 'ring-2 ring-blue-500'
+                                  : ''
+                              }`}
+                            />
                           </td>
-                          {Array.from({ length: getSheetColumnCount(activeSheet) }).map((_, colIndex) => (
-                            <td key={colIndex} className="border border-gray-300 p-0">
-                              <input
-                                type="text"
-                                value={getCellDisplayValue(activeSheet, rowIndex, colIndex)}
-                                onChange={(e) => handleCellEdit(activeSheet.id, rowIndex, colIndex, e.target.value)}
-                                onFocus={() => handleCellSelect(rowIndex, colIndex)}
-                                style={getCellStyle(rowIndex, colIndex)}
-                                className={`w-full h-full px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                  selectedCell?.row === rowIndex && selectedCell?.col === colIndex
-                                    ? 'ring-2 ring-blue-500'
-                                    : ''
-                                }`}
-                              />
-                            </td>
-                          ))}
-                        </tr>
-                      ))
-                    ) : (
-                      Array.from({ length: 20 }).map((_, rowIndex) => (
-                        <tr key={rowIndex}>
-                          <td className="border border-gray-300 bg-gray-100 text-center text-xs text-gray-600 px-2">
-                            {rowIndex + 1}
-                          </td>
-                          {Array.from({ length: getSheetColumnCount(activeSheet) }).map((_, colIndex) => (
-                            <td key={colIndex} className="border border-gray-300 p-0">
-                              <input
-                                type="text"
-                                onFocus={() => handleCellSelect(rowIndex, colIndex)}
-                                onChange={(e) => handleCellEdit(activeSheetId, rowIndex, colIndex, e.target.value)}
-                                style={getCellStyle(rowIndex, colIndex)}
-                                className={`w-full h-full px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                  selectedCell?.row === rowIndex && selectedCell?.col === colIndex
-                                    ? 'ring-2 ring-blue-500'
-                                    : ''
-                                }`}
-                              />
-                            </td>
-                          ))}
-                        </tr>
-                      ))
-                    )}
+                        ))}
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
