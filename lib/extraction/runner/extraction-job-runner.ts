@@ -58,6 +58,7 @@ export async function runExtractionJob({
       document: null,
       job: null,
       template: null,
+      llmConfig: null,
       buffer: Buffer.alloc(0),
       ocrText: '',
       pageCount: 0,

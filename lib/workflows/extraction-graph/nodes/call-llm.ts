@@ -11,6 +11,7 @@ export async function callLlmNode(
     systemPrompt: state.systemPrompt,
     userMessage: state.userMessage,
     fallbackText: state.normalizedText,
+    llmConfig: state.llmConfig,
   });
 
   return { extractedJson };

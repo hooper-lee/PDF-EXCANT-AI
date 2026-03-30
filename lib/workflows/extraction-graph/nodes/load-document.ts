@@ -2,6 +2,7 @@ import { JOB_STATUS } from '@/lib/domain';
 import { findExtractionTemplateById } from '@/lib/extraction/template-service';
 import { findDocumentByIdForUser } from '@/lib/repositories/document-repository';
 import { findExtractionJobByIdForUser } from '@/lib/repositories/extraction-job-repository';
+import { getResolvedLlmConfig } from '@/lib/services/llm-config.service';
 import type {
   ExtractionGraphNodeResult,
   ExtractionGraphRuntimeState,
@@ -10,9 +11,10 @@ import type {
 export async function loadDocumentNode(
   state: ExtractionGraphRuntimeState
 ): Promise<ExtractionGraphNodeResult> {
-  const [document, job] = await Promise.all([
+  const [document, job, llmConfig] = await Promise.all([
     findDocumentByIdForUser(state.documentId, state.userId),
     findExtractionJobByIdForUser(state.jobId, state.userId),
+    getResolvedLlmConfig(),
   ]);
 
   if (!document || !job) {
@@ -28,6 +30,7 @@ export async function loadDocumentNode(
     document,
     job,
     template,
+    llmConfig,
     fileUrl: document.fileUrl,
     prompt: state.prompt ?? job.inputPrompt ?? undefined,
     status: job.status as typeof JOB_STATUS[keyof typeof JOB_STATUS],

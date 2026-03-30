@@ -1,5 +1,6 @@
 import { Annotation } from '@langchain/langgraph';
 import type { JobStatus } from '@/lib/domain';
+import type { ResolvedLlmConfig } from '@/lib/services/llm-config.service';
 
 interface ExtractionDocumentSnapshot {
   id: string;
@@ -59,6 +60,7 @@ export interface ExtractionState {
   document: ExtractionDocumentSnapshot | null;
   job: ExtractionJobSnapshot | null;
   template: ExtractionTemplateSnapshot | null;
+  llmConfig: ResolvedLlmConfig | null;
   updatedUser: {
     id?: string;
     pagesUsed: number;
@@ -93,6 +95,7 @@ export const ExtractionStateAnnotation = Annotation.Root({
   document: Annotation<ExtractionDocumentSnapshot | null>,
   job: Annotation<ExtractionJobSnapshot | null>,
   template: Annotation<ExtractionTemplateSnapshot | null>,
+  llmConfig: Annotation<ResolvedLlmConfig | null>,
   updatedUser: Annotation<ExtractionState['updatedUser']>,
 });
 

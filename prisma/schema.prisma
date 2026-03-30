@@ -71,6 +71,20 @@ model ExtractionTemplate {
   @@index([createdAt])
 }
 
+model LlmConfig {
+  id         String   @id @default(cuid())
+  key        String   @unique @default("default")
+  provider   String   @default("OPENAI") // LlmProvider
+  model      String   @default("gpt-4o-mini")
+  apiKey     String?
+  baseUrl    String?
+  isEnabled  Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([isEnabled])
+}
+
 model UsageRecord {
   id         String   @id @default(cuid())
   userId     String

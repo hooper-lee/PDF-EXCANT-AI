@@ -92,7 +92,7 @@ export default function Navbar() {
 
   const aiTools = [
     { name: t.tools.toolNames.aiPdfExtract, href: '/extract', description: t.tools.descriptions.aiPdfExtract },
-    { name: t.tools.toolNames.aiImageExtract, href: '/tools/ai-image-extract', description: t.tools.descriptions.aiImageExtract },
+    { name: t.tools.toolNames.aiImageExtract, href: '/extract', description: t.tools.descriptions.aiImageExtract },
   ];
 
   const pdfTools = [

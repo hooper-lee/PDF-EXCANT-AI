@@ -17,6 +17,16 @@ interface Stats {
   totalRevenue: number;
 }
 
+interface LlmConfigForm {
+  provider: 'OPENAI' | 'OPENAI_COMPATIBLE' | 'GEMINI';
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+  isEnabled: boolean;
+  hasApiKey: boolean;
+  source: 'database' | 'env' | 'fallback';
+}
+
 interface User {
   id: string;
   email: string;
@@ -92,6 +102,37 @@ export default function AdminPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [changingPassword, setChangingPassword] = useState(false);
   const [passwordError, setPasswordError] = useState('');
+  const [llmConfig, setLlmConfig] = useState<LlmConfigForm>({
+    provider: 'OPENAI',
+    model: 'gpt-4o-mini',
+    baseUrl: '',
+    apiKey: '',
+    isEnabled: true,
+    hasApiKey: false,
+    source: 'fallback',
+  });
+  const [savingLlmConfig, setSavingLlmConfig] = useState(false);
+  const [testingLlmConfig, setTestingLlmConfig] = useState(false);
+  const [llmTestMessage, setLlmTestMessage] = useState('');
+
+  const providerOptions = [
+    { value: 'OPENAI' as const, label: 'OpenAI' },
+    { value: 'OPENAI_COMPATIBLE' as const, label: 'OpenAI Compatible' },
+    { value: 'GEMINI' as const, label: 'Gemini' },
+  ];
+
+  const apiKeyLabel =
+    llmConfig.provider === 'GEMINI' ? 'Gemini API Key' : 'API Key';
+  const apiKeyPlaceholder =
+    llmConfig.provider === 'GEMINI'
+      ? 'AIza...'
+      : llmConfig.hasApiKey
+        ? '已保存，留空表示保持不变'
+        : 'sk-...';
+  const baseUrlHint =
+    llmConfig.provider === 'OPENAI_COMPATIBLE'
+      ? '用于接入兼容 OpenAI API 协议的第三方模型服务'
+      : '仅 OpenAI / OpenAI Compatible 模式会使用该项';
 
   useEffect(() => {
     checkAuthAndLoadData();
@@ -141,6 +182,22 @@ export default function AdminPage() {
       const token = localStorage.getItem('token');
       if (!token) return;
 
+      try {
+        const llmResponse = await fetch('/api/admin/llm-config', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (llmResponse.ok) {
+          const llmData = await llmResponse.json();
+          setLlmConfig((current) => ({
+            ...current,
+            ...llmData.config,
+            apiKey: '',
+          }));
+        }
+      } catch (error) {
+        console.error('LLM config request failed:', error);
+      }
+
       // 加载统计数据
       try {
         const statsResponse = await fetch('/api/admin/stats', {
@@ -176,6 +233,91 @@ export default function AdminPage() {
       console.error('加载数据失败:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveLlmConfig = async () => {
+    try {
+      if (typeof window === 'undefined') return;
+
+      const token = localStorage.getItem('token');
+      if (!token) return;
+
+      setSavingLlmConfig(true);
+
+      const response = await fetch('/api/admin/llm-config', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          provider: llmConfig.provider,
+          model: llmConfig.model,
+          baseUrl: llmConfig.baseUrl,
+          apiKey: llmConfig.apiKey,
+          isEnabled: llmConfig.isEnabled,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || '保存 LLM 配置失败');
+      }
+
+      setLlmConfig((current) => ({
+        ...current,
+        ...data.config,
+        apiKey: '',
+      }));
+      alert('LLM 配置已更新');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '保存 LLM 配置失败';
+      alert(message);
+    } finally {
+      setSavingLlmConfig(false);
+    }
+  };
+
+  const handleTestLlmConfig = async () => {
+    try {
+      if (typeof window === 'undefined') return;
+
+      const token = localStorage.getItem('token');
+      if (!token) return;
+
+      setTestingLlmConfig(true);
+      setLlmTestMessage('');
+
+      const response = await fetch('/api/admin/llm-config/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          provider: llmConfig.provider,
+          model: llmConfig.model,
+          baseUrl: llmConfig.baseUrl,
+          apiKey: llmConfig.apiKey,
+          isEnabled: llmConfig.isEnabled,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || '模型测试失败');
+      }
+
+      const modelLabel = data?.config?.model || llmConfig.model;
+      setLlmTestMessage(
+        `测试成功：${data?.config?.provider || llmConfig.provider} / ${modelLabel}${data?.config?.usedStoredKey ? '（使用已保存 Key）' : ''}`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '模型测试失败';
+      setLlmTestMessage(`测试失败：${message}`);
+    } finally {
+      setTestingLlmConfig(false);
     }
   };
 
@@ -491,6 +633,135 @@ export default function AdminPage() {
           {/* 后台用户 */}
           {activeMenu === 'backend' && (
             <div className="space-y-4">
+              <div className="bg-white rounded-lg shadow-sm border p-4">
+                <div className="flex items-start justify-between gap-4 mb-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-700">LLM 模型配置</h3>
+                    <p className="text-xs text-gray-500 mt-1">
+                      LangGraph 的 `call-llm` 节点会优先读取这里的配置；未配置 API Key 时会退化成规则提取。
+                    </p>
+                  </div>
+                  <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                    来源: {llmConfig.source === 'database' ? '后台配置' : llmConfig.source === 'env' ? '环境变量' : '默认回退'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label className="block">
+                    <span className="text-sm text-gray-600">提供商</span>
+                    <select
+                      value={llmConfig.provider}
+                      onChange={(e) =>
+                        setLlmConfig((current) => ({
+                          ...current,
+                          provider: e.target.value as LlmConfigForm['provider'],
+                        }))
+                      }
+                      className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500"
+                    >
+                      {providerOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="block">
+                    <span className="text-sm text-gray-600">模型名称</span>
+                    <input
+                      type="text"
+                      value={llmConfig.model}
+                      onChange={(e) =>
+                        setLlmConfig((current) => ({
+                          ...current,
+                          model: e.target.value,
+                        }))
+                      }
+                      placeholder="gpt-4o-mini"
+                      className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500"
+                    />
+                  </label>
+
+                  <label className="block md:col-span-2">
+                    <span className="text-sm text-gray-600">{apiKeyLabel}</span>
+                    <input
+                      type="password"
+                      value={llmConfig.apiKey}
+                      onChange={(e) =>
+                        setLlmConfig((current) => ({
+                          ...current,
+                          apiKey: e.target.value,
+                        }))
+                      }
+                      placeholder={apiKeyPlaceholder}
+                      className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      {llmConfig.hasApiKey ? '当前已保存 API Key。若不想修改，可留空。' : '当前未保存 API Key，将退化为规则提取。'}
+                    </p>
+                  </label>
+
+                  <label className="block md:col-span-2">
+                    <span className="text-sm text-gray-600">自定义 Base URL（可选）</span>
+                    <input
+                      type="text"
+                      value={llmConfig.baseUrl}
+                      onChange={(e) =>
+                        setLlmConfig((current) => ({
+                          ...current,
+                          baseUrl: e.target.value,
+                        }))
+                      }
+                      placeholder="https://api.openai.com/v1"
+                      className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">{baseUrlHint}</p>
+                  </label>
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  <label className="flex items-center gap-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={llmConfig.isEnabled}
+                      onChange={(e) =>
+                        setLlmConfig((current) => ({
+                          ...current,
+                          isEnabled: e.target.checked,
+                        }))
+                      }
+                    />
+                    启用 LLM 提取
+                  </label>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={handleTestLlmConfig}
+                      disabled={testingLlmConfig}
+                      className="px-4 py-2 border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50 text-sm font-medium disabled:opacity-50"
+                    >
+                      {testingLlmConfig ? '测试中...' : '测试模型'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveLlmConfig}
+                      disabled={savingLlmConfig}
+                      className="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 text-sm font-medium disabled:opacity-50"
+                    >
+                      {savingLlmConfig ? '保存中...' : '保存 LLM 配置'}
+                    </button>
+                  </div>
+                </div>
+
+                {llmTestMessage && (
+                  <div className={`mt-3 text-sm ${llmTestMessage.startsWith('测试成功') ? 'text-green-700' : 'text-red-700'}`}>
+                    {llmTestMessage}
+                  </div>
+                )}
+              </div>
+
               {/* 查询条件 */}
               <div className="bg-white rounded-lg shadow-sm border p-4">
                 <h3 className="text-sm font-semibold text-gray-700 mb-3">查询条件</h3>

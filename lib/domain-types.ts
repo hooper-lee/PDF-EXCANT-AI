@@ -7,6 +7,7 @@ export type PaymentMethod = 'CARD' | 'PAYPAL';
 export type JobStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
 export type UsageSource = 'EXTRACTION' | 'INVITE_REWARD' | 'SUBSCRIPTION_GRANT' | 'ADMIN_ADJUST';
 export type UsageDirection = 'IN' | 'OUT';
+export type LlmProvider = 'OPENAI' | 'OPENAI_COMPATIBLE' | 'GEMINI';
 
 export const USER_ROLE = {
   USER: 'USER' as UserRole,
@@ -62,8 +63,20 @@ export const USAGE_DIRECTION = {
   OUT: 'OUT' as UsageDirection,
 };
 
+export const LLM_PROVIDER = {
+  OPENAI: 'OPENAI' as LlmProvider,
+  OPENAI_COMPATIBLE: 'OPENAI_COMPATIBLE' as LlmProvider,
+  GEMINI: 'GEMINI' as LlmProvider,
+};
+
 export const USER_PLAN_VALUES: UserPlan[] = [
   USER_PLAN.FREE,
   USER_PLAN.MONTHLY,
   USER_PLAN.YEARLY,
+];
+
+export const LLM_PROVIDER_VALUES: LlmProvider[] = [
+  LLM_PROVIDER.OPENAI,
+  LLM_PROVIDER.OPENAI_COMPATIBLE,
+  LLM_PROVIDER.GEMINI,
 ];

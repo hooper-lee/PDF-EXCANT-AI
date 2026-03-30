@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { 
   Upload, Loader2, Download, Home, Save, Plus, X, Settings, FileText,
   Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight,
@@ -10,7 +10,7 @@ import {
   Layers, Split, WrapText, RotateCcw, RotateCw, ChevronRight, ChevronLeft
 } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import UserInfo from '../components/UserInfo';
 import { useTranslation } from '@/lib/useLanguage';
 import type { JobStatus } from '@/lib/domain-types';
@@ -69,8 +69,25 @@ interface ExtractionTemplate {
   promptText: string;
 }
 
+const DEFAULT_SHEET: SheetData = { id: 'sheet1', name: 'Sheet1', data: [], headers: [] };
+const DEFAULT_COLUMN_COUNT = 10;
+
+function safeParseJson<T>(raw: string | null, fallback: T): T {
+  if (!raw) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    console.error('JSON 解析失败，已回退到默认值:', error);
+    return fallback;
+  }
+}
+
 export default function ExtractPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const t = useTranslation();
   const [file, setFile] = useState<File | null>(null);
   const [prompt, setPrompt] = useState('');
@@ -113,18 +130,111 @@ export default function ExtractPage() {
   const [tempName, setTempName] = useState('');
   const [latestJob, setLatestJob] = useState<ExtractionJobInfo | null>(null);
 
+  const resetWorkspace = (nextName?: string) => {
+    setFile(null);
+    setPrompt('');
+    setError('');
+    setParseRule('');
+    setSelectedTemplateId('');
+    setSheets([{ ...DEFAULT_SHEET }]);
+    setActiveSheetId(DEFAULT_SHEET.id);
+    setCellFormats({});
+    setLatestJob(null);
+    setSelectedCell(null);
+    setFormulaBarValue('');
+    setHistory([]);
+    setHistoryIndex(-1);
+    setConversationName(nextName || `${t.extract.conversation} 1`);
+    setIsEditingName(false);
+    setTempName('');
+  };
+
+  const getSheetColumnCount = (sheet: SheetData) => {
+    if (sheet.headers.length > 0) {
+      return sheet.headers.length;
+    }
+
+    const widestRow = sheet.data.reduce((max, row) => Math.max(max, row?.length || 0), 0);
+    return Math.max(DEFAULT_COLUMN_COUNT, widestRow);
+  };
+
+  const getCellDisplayValue = (sheet: SheetData, rowIndex: number, colIndex: number) => {
+    const rawCell = sheet.data[rowIndex]?.[colIndex];
+    if (!rawCell) {
+      return '';
+    }
+
+    const cell =
+      typeof rawCell === 'object' && rawCell !== null
+        ? rawCell
+        : { value: String(rawCell || ''), formula: undefined, computed: undefined };
+
+    if (cell.formula) {
+      return cell.computed !== undefined ? String(cell.computed) : cell.value;
+    }
+
+    return cell.value || '';
+  };
+
+  const updateSheetWithData = (data: any) => {
+    let rows: any[] = [];
+    let headers: string[] = [];
+    
+    if (Array.isArray(data)) {
+      rows = data;
+      if (rows.length > 0) {
+        headers = Object.keys(rows[0]);
+      }
+    } else if (typeof data === 'object' && data !== null) {
+      if (data.data && Array.isArray(data.data)) {
+        rows = data.data;
+        if (rows.length > 0) {
+          headers = Object.keys(rows[0]);
+        }
+      } else {
+        headers = ['字段', '值'];
+        rows = Object.entries(data).map(([key, value]) => ({ '字段': key, '值': value }));
+      }
+    }
+
+    const tableData: CellData[][] = rows.map(row => 
+      headers.map(header => ({
+        value: String(row[header] || ''),
+        formula: undefined,
+        computed: undefined
+      }))
+    );
+
+    setSheets([
+      {
+        id: DEFAULT_SHEET.id,
+        name: DEFAULT_SHEET.name,
+        data: tableData,
+        headers,
+      },
+    ]);
+    setActiveSheetId(DEFAULT_SHEET.id);
+  };
+
   useEffect(() => {
     const userData = localStorage.getItem('user');
     if (!userData) {
       router.push('/login');
       return;
     }
-    const parsedUser = JSON.parse(userData);
+    const parsedUser = safeParseJson<any>(userData, null);
+    if (!parsedUser?.id) {
+      localStorage.removeItem('user');
+      localStorage.removeItem('token');
+      router.replace('/login');
+      return;
+    }
     if (parsedUser?.role === USER_ROLE.ADMIN) {
       router.replace('/admin');
       return;
     }
     setUser(parsedUser);
+    resetWorkspace();
     
     // 如果用户没有邀请码，生成一个
     if (!parsedUser.inviteCode) {
@@ -133,6 +243,60 @@ export default function ExtractPage() {
     
     fetchTemplates();
   }, []);
+
+  useEffect(() => {
+    const docId = searchParams.get('docId');
+    if (!user?.id || !docId) {
+      return;
+    }
+
+      const token = localStorage.getItem('token');
+      if (!token) {
+        return;
+      }
+
+      const loadDocument = async () => {
+        try {
+          const response = await fetch(`/api/documents/${docId}`, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+            },
+          });
+
+          if (!response.ok) {
+            throw new Error('加载提取记录失败');
+          }
+
+          const payload = await response.json();
+          const document = payload?.data?.document || payload?.document;
+          if (!document) {
+            throw new Error('提取记录不存在');
+          }
+
+          resetWorkspace(document.originalName || `${t.extract.conversation} 1`);
+          if (document.extractedData) {
+            const parsedData = safeParseJson(document.extractedData, {});
+            updateSheetWithData(parsedData);
+          }
+          const newestJob = document.extractionJobs?.[0];
+          setLatestJob(
+            newestJob
+              ? {
+                  id: newestJob.id,
+                  status: newestJob.status,
+                  errorMessage: newestJob.errorMessage,
+                  finishedAt: newestJob.finishedAt,
+                }
+              : null
+          );
+        } catch (loadError) {
+          console.error('加载提取记录失败:', loadError);
+          setError(loadError instanceof Error ? loadError.message : '加载提取记录失败');
+        }
+      };
+
+      loadDocument();
+  }, [searchParams, user?.id, t.extract.conversation]);
 
   const generateInviteCode = async () => {
     try {
@@ -237,9 +401,10 @@ export default function ExtractPage() {
         
         if (docResponse.ok) {
           const docData = await docResponse.json();
-          const parsedData = JSON.parse(docData.document.extractedData || '{}');
+          const document = docData?.data?.document || docData?.document;
+          const parsedData = safeParseJson(document?.extractedData || '{}', {});
           updateSheetWithData(parsedData);
-          const newestJob = docData.document.extractionJobs?.[0];
+          const newestJob = document?.extractionJobs?.[0];
           if (newestJob) {
             setLatestJob({
               id: newestJob.id,
@@ -276,52 +441,6 @@ export default function ExtractPage() {
     } finally {
       setLoading(false);
     }
-  };
-
-  const updateSheetWithData = (data: any) => {
-    let rows: any[] = [];
-    let headers: string[] = [];
-    
-    if (Array.isArray(data)) {
-      rows = data;
-      if (rows.length > 0) {
-        headers = Object.keys(rows[0]);
-      }
-    } else if (typeof data === 'object') {
-      if (data.data && Array.isArray(data.data)) {
-        rows = data.data;
-        if (rows.length > 0) {
-          headers = Object.keys(rows[0]);
-        }
-      } else {
-        headers = ['字段', '值'];
-        rows = Object.entries(data).map(([key, value]) => ({ '字段': key, '值': value }));
-      }
-    }
-
-    const tableData: CellData[][] = rows.map(row => 
-      headers.map(header => ({
-        value: String(row[header] || ''),
-        formula: undefined,
-        computed: undefined
-      }))
-    );
-
-    setSheets(prev => prev.map(sheet => 
-      sheet.id === activeSheetId 
-        ? { ...sheet, data: tableData, headers }
-        : sheet
-    ));
-  };
-
-  const saveHistory = () => {
-    const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push({
-      sheets: JSON.parse(JSON.stringify(sheets)),
-      cellFormats: JSON.parse(JSON.stringify(cellFormats))
-    });
-    setHistory(newHistory);
-    setHistoryIndex(newHistory.length - 1);
   };
 
   const undo = () => {
@@ -435,7 +554,9 @@ export default function ExtractPage() {
       });
 
       if (!response.ok) {
-        throw new Error('导出失败');
+        const rawMessage = await response.text();
+        const data = safeParseJson<{ error?: string }>(rawMessage, { error: '导出失败' });
+        throw new Error(data.error || '导出失败');
       }
 
       const blob = await response.blob();
@@ -448,36 +569,51 @@ export default function ExtractPage() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
     } catch (err) {
-      alert('导出失败，请稍后重试');
+      alert(err instanceof Error ? err.message : '导出失败，请稍后重试');
     }
   };
 
   const handleCellEdit = (sheetId: string, rowIndex: number, colIndex: number, value: string) => {
-    setSheets(prev => prev.map(sheet => {
-      if (sheet.id === sheetId) {
-        const newData = [...sheet.data];
-        if (!newData[rowIndex]) {
-          newData[rowIndex] = [];
+    setSheets(prev => {
+      const nextSheets = prev.map(sheet => {
+        if (sheet.id !== sheetId) {
+          return sheet;
         }
-        
+
+        const newData = sheet.data.map((row) => [...row]);
+        while (newData.length <= rowIndex) {
+          newData.push([]);
+        }
+
+        while (newData[rowIndex].length <= colIndex) {
+          newData[rowIndex].push({ value: '' });
+        }
+
         const cellData: CellData = {
-          value: value,
+          value,
           formula: value.startsWith('=') ? value : undefined,
-          computed: undefined
+          computed: undefined,
         };
 
-        // 如果是公式，计算结果
+        newData[rowIndex][colIndex] = cellData;
+
         if (cellData.formula) {
           cellData.computed = evaluateFormula(cellData.formula, newData);
         }
 
-        newData[rowIndex][colIndex] = cellData;
         return { ...sheet, data: newData };
-      }
-      return sheet;
-    }));
-    
-    saveHistory();
+      });
+
+      const newHistory = history.slice(0, historyIndex + 1);
+      newHistory.push({
+        sheets: JSON.parse(JSON.stringify(nextSheets)),
+        cellFormats: JSON.parse(JSON.stringify(cellFormats)),
+      });
+      setHistory(newHistory);
+      setHistoryIndex(newHistory.length - 1);
+
+      return nextSheets;
+    });
   };
 
   const handleCellSelect = (row: number, col: number) => {
@@ -622,7 +758,7 @@ export default function ExtractPage() {
               <div 
                 className="text-lg font-semibold text-gray-800 cursor-pointer hover:bg-gray-100 px-3 py-1 rounded-lg transition-colors border-2 border-transparent hover:border-gray-200"
                 onDoubleClick={handleNameDoubleClick}
-                title={t.extract.editConversationName}
+                title="双击修改当前工作区名称"
               >
                 {conversationName}
               </div>
@@ -654,13 +790,14 @@ export default function ExtractPage() {
         {/* 左侧边栏 */}
         <div className="w-72 bg-white border-r flex flex-col shadow-sm">
           <div className="p-4 border-b">
-            <Link 
-              href="/" 
+            <button
+              type="button"
+              onClick={() => resetWorkspace()}
               className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition-colors border border-gray-200"
             >
               <Plus className="w-4 h-4" />
-              新建会话
-            </Link>
+              清空当前工作区
+            </button>
           </div>
 
           <div className="flex-1 p-4 overflow-y-auto space-y-4">
@@ -1186,19 +1323,11 @@ export default function ExtractPage() {
                   <thead className="bg-gray-50 sticky top-0">
                     <tr>
                       <th className="w-12 border border-gray-300 bg-gray-100 text-xs text-gray-600"></th>
-                      {activeSheet.headers.length > 0 ? (
-                        activeSheet.headers.map((header, index) => (
-                          <th key={index} className="border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 min-w-24">
-                            {String.fromCharCode(65 + index)}
-                          </th>
-                        ))
-                      ) : (
-                        Array.from({ length: 10 }).map((_, index) => (
-                          <th key={index} className="border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 min-w-24">
-                            {String.fromCharCode(65 + index)}
-                          </th>
-                        ))
-                      )}
+                      {Array.from({ length: getSheetColumnCount(activeSheet) }).map((_, index) => (
+                        <th key={index} className="border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 min-w-24">
+                          {String.fromCharCode(65 + index)}
+                        </th>
+                      ))}
                     </tr>
                     {activeSheet.headers.length > 0 && (
                       <tr>
@@ -1218,33 +1347,22 @@ export default function ExtractPage() {
                           <td className="border border-gray-300 bg-gray-100 text-center text-xs text-gray-600 px-2">
                             {rowIndex + (activeSheet.headers.length > 0 ? 2 : 1)}
                           </td>
-                          {row.map((cellData, colIndex) => {
-                            // 确保 cellData 是对象
-                            const cell = typeof cellData === 'object' && cellData !== null 
-                              ? cellData 
-                              : { value: String(cellData || ''), formula: undefined, computed: undefined };
-                            
-                            const displayValue = cell.formula 
-                              ? (cell.computed !== undefined ? String(cell.computed) : cell.value)
-                              : cell.value;
-                            
-                            return (
-                              <td key={colIndex} className="border border-gray-300 p-0">
-                                <input
-                                  type="text"
-                                  value={displayValue || ''}
-                                  onChange={(e) => handleCellEdit(activeSheet.id, rowIndex, colIndex, e.target.value)}
-                                  onFocus={() => handleCellSelect(rowIndex, colIndex)}
-                                  style={getCellStyle(rowIndex, colIndex)}
-                                  className={`w-full h-full px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                    selectedCell?.row === rowIndex && selectedCell?.col === colIndex
-                                      ? 'ring-2 ring-blue-500'
-                                      : ''
-                                  }`}
-                                />
-                              </td>
-                            );
-                          })}
+                          {Array.from({ length: getSheetColumnCount(activeSheet) }).map((_, colIndex) => (
+                            <td key={colIndex} className="border border-gray-300 p-0">
+                              <input
+                                type="text"
+                                value={getCellDisplayValue(activeSheet, rowIndex, colIndex)}
+                                onChange={(e) => handleCellEdit(activeSheet.id, rowIndex, colIndex, e.target.value)}
+                                onFocus={() => handleCellSelect(rowIndex, colIndex)}
+                                style={getCellStyle(rowIndex, colIndex)}
+                                className={`w-full h-full px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                  selectedCell?.row === rowIndex && selectedCell?.col === colIndex
+                                    ? 'ring-2 ring-blue-500'
+                                    : ''
+                                }`}
+                              />
+                            </td>
+                          ))}
                         </tr>
                       ))
                     ) : (
@@ -1253,7 +1371,7 @@ export default function ExtractPage() {
                           <td className="border border-gray-300 bg-gray-100 text-center text-xs text-gray-600 px-2">
                             {rowIndex + 1}
                           </td>
-                          {Array.from({ length: 10 }).map((_, colIndex) => (
+                          {Array.from({ length: getSheetColumnCount(activeSheet) }).map((_, colIndex) => (
                             <td key={colIndex} className="border border-gray-300 p-0">
                               <input
                                 type="text"
@@ -1391,8 +1509,8 @@ export default function ExtractPage() {
                         输入解析规则
                       </label>
                       <textarea
-                        value={prompt}
-                        onChange={(e) => setPrompt(e.target.value)}
+                        value={parseRule}
+                        onChange={(e) => setParseRule(e.target.value)}
                         placeholder="例如：提取发票中的日期、金额、供应商名称和商品明细..."
                         className="w-full border-2 border-gray-300 rounded-xl p-4 text-sm h-40 focus:ring-2 focus:ring-green-500 focus:border-green-500 resize-none transition-all"
                       />
@@ -1406,21 +1524,21 @@ export default function ExtractPage() {
                       </div>
                       <div className="space-y-2">
                         <button
-                          onClick={() => setPrompt('提取发票中的发票号码、开票日期、供应商名称、税号、金额（含税、不含税）、税额和商品明细（名称、数量、单价）')}
+                          onClick={() => setParseRule('提取发票中的发票号码、开票日期、供应商名称、税号、金额（含税、不含税）、税额和商品明细（名称、数量、单价）')}
                           className="w-full text-left px-3 py-2 text-xs bg-white hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded-lg transition-all"
                         >
                           <span className="font-medium text-gray-700">📄 发票提取</span>
                           <p className="text-gray-500 mt-1">提取发票号码、日期、金额、供应商等信息</p>
                         </button>
                         <button
-                          onClick={() => setPrompt('提取合同中的合同编号、甲方和乙方名称、签订日期、合同金额、付款方式、履行期限和违约条款')}
+                          onClick={() => setParseRule('提取合同中的合同编号、甲方和乙方名称、签订日期、合同金额、付款方式、履行期限和违约条款')}
                           className="w-full text-left px-3 py-2 text-xs bg-white hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded-lg transition-all"
                         >
                           <span className="font-medium text-gray-700">📋 合同提取</span>
                           <p className="text-gray-500 mt-1">提取合同编号、双方信息、金额等关键条款</p>
                         </button>
                         <button
-                          onClick={() => setPrompt('提取文档中的所有表格数据，保持原有的行列结构，包括表头和所有数据行')}
+                          onClick={() => setParseRule('提取文档中的所有表格数据，保持原有的行列结构，包括表头和所有数据行')}
                           className="w-full text-left px-3 py-2 text-xs bg-white hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded-lg transition-all"
                         >
                           <span className="font-medium text-gray-700">📊 表格提取</span>
@@ -1431,12 +1549,11 @@ export default function ExtractPage() {
 
                     <button
                       onClick={() => {
-                        if (prompt.trim()) {
-                          setParseRule(prompt);
-                          setPrompt('');
+                        if (parseRule.trim()) {
+                          setShowParseRuleDialog(false);
                         }
                       }}
-                      disabled={!prompt.trim()}
+                      disabled={!parseRule.trim()}
                       className="w-full bg-green-500 text-white py-3 rounded-xl hover:bg-green-600 disabled:bg-gray-300 disabled:cursor-not-allowed font-medium transition-colors shadow-sm"
                     >
                       保存规则

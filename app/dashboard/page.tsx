@@ -74,7 +74,7 @@ export default function DashboardPage() {
 
       if (docsResponse.ok) {
         const data = await docsResponse.json();
-        setDocuments(data.documents || []);
+        setDocuments(data?.data?.documents || data?.documents || []);
       }
     } catch (error) {
       console.error('加载数据失败:', error);

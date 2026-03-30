@@ -15,9 +15,10 @@ AI 提取主链路目前是：
 
 1. 用户上传 PDF 或图片
 2. PDF 通过 `pdf-parse` 提取文本，图片通过 `tesseract.js` 做 OCR
-3. 若配置了 `OPENAI_API_KEY`，使用 OpenAI 提取结构化 JSON
-4. 若未配置 OpenAI，则退回到基于规则的演示模式提取
-5. 将提取结果导出为 Excel，并记录一条 `Document`
+3. LangGraph 在 `call-llm` 节点读取后台 LLM 配置；若后台未配置，则回退到 `.env`
+4. 若存在可用 OpenAI 配置，则使用配置中的模型提取结构化 JSON
+5. 若未配置可用 API Key，则退回到基于规则的演示模式提取
+6. 将提取结果导出为 Excel，并记录 `Document + ExtractionJob`
 
 ## 当前能力边界
 
@@ -40,8 +41,11 @@ AI 提取主链路目前是：
 
 - 已有上传、OCR、OpenAI 提取、Excel 导出链路
 - OpenAI 是当前真实接入的 AI 提取方式
+- 管理后台可以配置当前生效的 LLM 提供商、模型、API Key 和可选 Base URL
 - `GEMINI_API_KEY` 目前只是预留，代码中已明确注释为暂时禁用
-- 未配置 `OPENAI_API_KEY` 时，系统会退回规则提取，适合演示，不等同于高质量 AI 解析
+- 当前最小支持的提供商包括 `OpenAI`、`OpenAI Compatible`、`Gemini`
+- 若后台未配置，则回退读取 `.env` 中的 `OPENAI_*` 或 `GEMINI_*`
+- 若没有可用 API Key，系统会退回规则提取，适合演示，不等同于高质量 AI 解析
 
 ### 文件存储
 
@@ -152,6 +156,8 @@ AI 提取主链路目前是：
   - `PUT /api/admin/users`
   - `POST /api/admin/users`
   - `PUT /api/admin/users/[id]`
+  - `GET /api/admin/llm-config`
+  - `PUT /api/admin/llm-config`
 - 邀请：
   - `POST /api/user/generate-invite-code`
 
@@ -166,6 +172,7 @@ AI 提取主链路目前是：
 - `UsageRecord`
 - `Subscription`
 - `Order`
+- `LlmConfig`
 
 ## 本地运行
 
@@ -185,11 +192,11 @@ cp .env.example .env
 
 - `DATABASE_URL`
 - `JWT_SECRET`
-- `OPENAI_API_KEY`
 
 说明：
 
-- 如果不配置 `OPENAI_API_KEY`，上传提取仍可运行，但会退回规则提取模式
+- `OPENAI_API_KEY` 现在可以放在 `.env`，也可以在后台里配置
+- 如果后台和 `.env` 都没有可用 API Key，上传提取仍可运行，但会退回规则提取模式
 - `STRIPE_*`、`AWS_*`、`GEMINI_API_KEY` 当前不是本地运行主链路的必需项
 
 ### 3. 初始化数据库
@@ -230,7 +237,15 @@ npm run dev
 - `JWT_SECRET`
   - JWT 签名与校验
 - `OPENAI_API_KEY`
-  - AI 提取主链路
+  - OpenAI / OpenAI Compatible 的环境变量回退项
+- `OPENAI_MODEL`
+  - 后台未配置时的模型回退项
+- `OPENAI_BASE_URL`
+  - 后台未配置时的可选 API Base URL 回退项
+- `GEMINI_API_KEY`
+  - Gemini 的环境变量回退项
+- `GEMINI_MODEL`
+  - Gemini 的模型回退项
 - `ADMIN_EMAIL`
   - `db:seed` 时的管理员邮箱
 - `ADMIN_INITIAL_PASSWORD`

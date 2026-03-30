@@ -23,9 +23,23 @@ export async function POST(request: NextRequest) {
     // 创建工作簿
     const workbook = new ExcelJS.Workbook();
 
+    const getCellValue = (cell: any) => {
+      if (cell && typeof cell === 'object') {
+        if (typeof cell.computed !== 'undefined' && cell.computed !== null && cell.computed !== '') {
+          return cell.computed;
+        }
+
+        if (typeof cell.value !== 'undefined') {
+          return cell.value;
+        }
+      }
+
+      return cell ?? '';
+    };
+
     // 为每个 sheet 创建工作表
     for (const sheet of sheets) {
-      const worksheet = workbook.addWorksheet(sheet.name);
+      const worksheet = workbook.addWorksheet(sheet.name || 'Sheet1');
 
       // 添加表头
       if (sheet.headers && sheet.headers.length > 0) {
@@ -45,7 +59,7 @@ export async function POST(request: NextRequest) {
       // 添加数据行
       if (sheet.data && sheet.data.length > 0) {
         sheet.data.forEach((row: any[]) => {
-          worksheet.addRow(row);
+          worksheet.addRow((row || []).map(getCellValue));
         });
       }
 
@@ -62,7 +76,7 @@ export async function POST(request: NextRequest) {
         if (sheet.data) {
           sheet.data.forEach((row: any[]) => {
             if (row[index]) {
-              const cellLength = String(row[index]).length;
+              const cellLength = String(getCellValue(row[index])).length;
               maxLength = Math.max(maxLength, cellLength);
             }
           });
